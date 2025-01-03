@@ -18,6 +18,7 @@
 	"license": "MIT",
 	"devDependencies": {
 		"@biomejs/biome": "1.9.4",
-		"lefthook": "1.10.1"
+		"lefthook": "1.10.1",
+		"typescript": "5.7.2"
 	}
 }
