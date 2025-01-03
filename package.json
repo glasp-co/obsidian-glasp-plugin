@@ -6,7 +6,6 @@
 	"scripts": {
 		"dev": "node esbuild.config.mjs",
 		"build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
-		"version": "node version-bump.mjs && git add manifest.json versions.json",
 		"format:fix": "biome format --write src",
 		"format:check": "biome format src",
 		"lint:fix": "biome check --write --unsafe src",
