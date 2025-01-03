@@ -10,12 +10,14 @@
 		"format:fix": "biome format --write src",
 		"format:check": "biome format src",
 		"lint:fix": "biome check --write --unsafe src",
-		"lint:check": "biome check src"
+		"lint:check": "biome check src",
+		"prepare": "lefthook install"
 	},
 	"keywords": [],
 	"author": "",
 	"license": "MIT",
 	"devDependencies": {
-		"@biomejs/biome": "1.9.4"
+		"@biomejs/biome": "1.9.4",
+		"lefthook": "1.10.1"
 	}
 }
