@@ -1,0 +1,1 @@
+export { GlaspHighlightAPI } from "./highlight";
