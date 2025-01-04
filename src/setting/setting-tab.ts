@@ -6,7 +6,7 @@ import type { SettingData } from "./setting";
 export class SettingTab extends PluginSettingTab {
 	private obApp: ObsidianApp;
 	private obPlugin: ObsidianPlugin;
-	private value: SettingData;
+	value: SettingData;
 
 	constructor(plugin: ObsidianGlaspPlugin, data: Partial<SettingData>) {
 		super(plugin.app, plugin);
