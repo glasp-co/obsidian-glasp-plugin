@@ -23,8 +23,12 @@
 		"typescript": "5.7.2"
 	},
 	"dependencies": {
-		"handlebars": "^4.7.8",
+		"handlebars": "4.7.8",
 		"obsidian": "1.7.2",
-		"tslib": "^2.8.1"
+		"tslib": "2.8.1"
+	},
+	"engines": {
+		"node": "20.17.0",
+		"npm": "10.8.2"
 	}
 }
