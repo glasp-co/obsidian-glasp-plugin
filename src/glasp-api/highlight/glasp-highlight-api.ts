@@ -15,6 +15,30 @@ export class GlaspHighlightAPI {
 	async fetchHighlights() {
 		const response =
 			await this.client.get<HighlightsResponse>("/v1/highlights");
-		return response;
+		return markdownList;
+		// return response;
 	}
 }
+
+const markdownList = {
+	results: [
+		{
+			id: "1",
+			title: "How to use toMatchImageSnapshot method in differencify",
+			url: "https://sample.com",
+			content: "- **Task 1**: Setup environment",
+		},
+		{
+			id: "2",
+			title: "How Airbnb Smoothly Upgrades React",
+			url: "https://sample.com",
+			content: "- **Task 1**: Setup environment",
+		},
+		{
+			id: "3",
+			title: "Functions: ImageResponse | Next.js",
+			url: "https://sample.com",
+			content: "- **Task 1**: Setup environment",
+		},
+	],
+};
