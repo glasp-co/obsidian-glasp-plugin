@@ -32,6 +32,9 @@ const context = await esbuild.context({
 		"@lezer/lr",
 		...builtinModules,
 	],
+	loader: {
+		".svg": "text",
+	},
 	format: "cjs",
 	target: "es2018",
 	logLevel: "info",
