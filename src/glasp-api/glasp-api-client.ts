@@ -14,7 +14,6 @@ export class GlaspAPIClient {
 
 	async get<T>(path: string): Promise<T> {
 		const url = `${this.baseUrl}${path}`;
-		console.log(url);
 		const headers = {
 			Accept: "application/json",
 			Authorization: `Bearer ${this.accessToken}`,

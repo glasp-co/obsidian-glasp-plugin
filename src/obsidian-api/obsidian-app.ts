@@ -1,5 +1,5 @@
 import { compile } from "handlebars";
-import type { App, TFolder, Vault } from "obsidian";
+import type { App, TFile, TFolder, Vault } from "obsidian";
 
 export class ObsidianApp {
 	private app: App;
@@ -11,6 +11,10 @@ export class ObsidianApp {
 	getAllFolders(): TFolder[] {
 		const folders = this.getVault().getAllFolders();
 		return folders;
+	}
+
+	getAllFiles(): TFile[] {
+		return this.getVault().getFiles();
 	}
 
 	async createFile<T>({

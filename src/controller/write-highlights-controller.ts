@@ -14,14 +14,18 @@ export class WriteHighlightController {
 		const highlightAPI = new GlaspHighlightAPI({ accessToken });
 		const response = await highlightAPI.fetchHighlights();
 
-		const promises = response.results.map(async (highlight) => {
-			this.obApp.createFile({
-				folder,
-				filename: highlight.title,
-				template: HIGHLIGHT_TEMPLATE,
-				data: this.parseHighlight(highlight),
+		const fileNames = this.obApp.getAllFiles().map((file) => file.name);
+
+		const promises = response.results
+			.filter((result) => !fileNames.includes(result.title))
+			.map(async (highlight) => {
+				this.obApp.createFile({
+					folder,
+					filename: highlight.title,
+					template: HIGHLIGHT_TEMPLATE,
+					data: this.parseHighlight(highlight),
+				});
 			});
-		});
 
 		await Promise.all(promises);
 	}
