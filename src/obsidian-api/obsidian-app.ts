@@ -19,7 +19,7 @@ export class ObsidianApp {
 		template,
 		data,
 	}: { folder: string; filename: string; template: string; data: T }) {
-		const templateDelegator = compile(template);
+		const templateDelegator = compile(template, { noEscape: true });
 		const targetData = templateDelegator(data);
 
 		const path = `${folder}/${filename}.md`;

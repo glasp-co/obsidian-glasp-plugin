@@ -1,6 +1,12 @@
+export type HighlightTemplate = {
+	url: string;
+	tags: string[];
+	content: string;
+};
+
 export const HIGHLIGHT_TEMPLATE = `---
-url: {{url}}
-tags: [{{tags}}]
+URL: {{url}}
+Tag: [{{tags}}]
 ---
 {{content}}
 `;

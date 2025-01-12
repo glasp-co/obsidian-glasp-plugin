@@ -1,36 +1,34 @@
 export type HighlightsResponse = {
 	count: number;
 	nextPageCursor: string | null;
-	results: HighlightResponse[];
+	results: UserHighlight[];
 };
 
-type HighlightResponse = {
+export type UserHighlight = {
 	id: string;
 	title: string;
-	thumbnail_url: string; // URL
-	url: string; // URL
-	glasp_url: string; // URL
+	thumbnail_url: string;
+	url: string;
+	glasp_url: string;
 	domain: string;
-	category: ContentCategory;
+	category: "article" | "video" | "tweet" | "pdf" | "book";
 	document_note: string | null;
 	summary: string;
 	tags: string[];
 	is_favorite: boolean;
 	created_at: string; // ISO date string
 	updated_at: string; // ISO date string
-	highlights: HighlightItemResponse[];
+	highlights: Highlight[];
 };
 
-type HighlightItemResponse = {
+export type Highlight = {
 	id: string;
 	text: string;
 	note: string;
-	color: string;
+	color: "pink" | "yellow" | "blue" | "green";
 	highlighted_at: string; // ISO date string
 	created_at: string; // ISO date string
 	updated_at: string; // ISO date string
-	url: string; // URL
-	playback_position: number | null;
+	url: string;
+	yt_playback_position: number | null; // YouTube timestamp in seconds
 };
-
-type ContentCategory = "article" | "video" | "tweet" | "pdf" | "book";
