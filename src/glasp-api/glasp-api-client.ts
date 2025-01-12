@@ -5,8 +5,7 @@ type Constructor = {
 };
 
 export class GlaspAPIClient {
-	// TODO: replace right api endpoint
-	private baseUrl = "https://api.thecatapi.com/v1/images/search?limit=100";
+	private baseUrl = "https://api.glasp.co";
 	private accessToken: string;
 
 	constructor({ accessToken }: Constructor) {
@@ -14,11 +13,8 @@ export class GlaspAPIClient {
 	}
 
 	async get<T>(path: string): Promise<T> {
-		const _url = `${this.baseUrl}${path}`;
-		// TODO: use _url after API is implemented
-		console.debug(_url);
-
-		const url = `${this.baseUrl}`;
+		const url = `${this.baseUrl}${path}`;
+		console.log(url);
 		const headers = {
 			Accept: "application/json",
 			Authorization: `Bearer ${this.accessToken}`,
