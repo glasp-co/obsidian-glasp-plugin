@@ -7,15 +7,18 @@ import type { StorageData } from "./types/storage";
 
 export default class ObsidianGlaspPlugin extends Plugin {
 	private settings: SettingTab;
+	private autoUpdateInterval: number | null = null;
+	private obApp: ObsidianApp;
+	private obPlugin: ObsidianPlugin;
 
 	async onload() {
 		const storageData = await this.getStorageData();
-		const obApp = new ObsidianApp(this.app);
-		const obPlugin = new ObsidianPlugin(this);
+		this.obApp = new ObsidianApp(this.app);
+		this.obPlugin = new ObsidianPlugin(this);
 
 		this.settings = new SettingTab({
-			obApp,
-			obPlugin,
+			obApp: this.obApp,
+			obPlugin: this.obPlugin,
 			glaspPlugin: this,
 			storageData,
 		});
@@ -23,9 +26,35 @@ export default class ObsidianGlaspPlugin extends Plugin {
 		this.addLeftBarIcon();
 		this.addCommandToPalette();
 		this.writeHighlights();
+		this.registerAutoUpdate();
+
+		this.updateFrequencyChangedListener();
 	}
 
 	onunload() {}
+
+	private async registerAutoUpdate() {
+		const updateFrequency = (await this.getStorageData()).updateFrequency;
+		if (this.autoUpdateInterval) {
+			window.clearInterval(this.autoUpdateInterval);
+		}
+
+		const interval = Number.parseInt(updateFrequency);
+		this.autoUpdateInterval = this.registerInterval(
+			window.setInterval(
+				() => {
+					this.writeHighlights();
+				},
+				interval * 60 * 1000,
+			),
+		);
+	}
+
+	private updateFrequencyChangedListener() {
+		this.obApp.listenEvent("glasp-plugin:update-frequency-changed", () => {
+			this.registerAutoUpdate();
+		});
+	}
 
 	private addLeftBarIcon() {
 		addIcon("glasp", glaspIcon);
@@ -45,14 +74,21 @@ export default class ObsidianGlaspPlugin extends Plugin {
 	}
 
 	private async writeHighlights() {
-		new Notice("Updating Highlights from Glasp");
-		const obApp = new ObsidianApp(this.app);
-		const obPlugin = new ObsidianPlugin(this);
 		const storageData = await this.getStorageData();
 
+		if (
+			!storageData.accessToken ||
+			!storageData.folder ||
+			!storageData.updateFrequency
+		) {
+			return;
+		}
+
+		new Notice("Updating Highlights from Glasp");
+
 		const controller = new WriteHighlightController({
-			obApp,
-			obPlugin,
+			obApp: this.obApp,
+			obPlugin: this.obPlugin,
 			storageData,
 		});
 		await controller.run({
