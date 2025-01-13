@@ -6,6 +6,7 @@
 	"scripts": {
 		"dev": "node esbuild.config.mjs",
 		"build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+		"test": "vitest run",
 		"tsc": "tsc -noEmit",
 		"format:fix": "biome format --write src",
 		"format:check": "biome format src",
@@ -21,7 +22,8 @@
 		"@types/node": "20.17.0",
 		"esbuild": "0.24.2",
 		"lefthook": "1.10.1",
-		"typescript": "5.7.2"
+		"typescript": "5.7.2",
+		"vitest": "2.1.8"
 	},
 	"dependencies": {
 		"handlebars": "4.7.8",
