@@ -1,6 +1,8 @@
 import { compile } from "handlebars";
 import type { App, CachedMetadata, TFile, TFolder, Vault } from "obsidian";
 
+const LISTENER = "glasp-plugin:update-frequency-changed";
+
 export class ObsidianApp {
 	private app: App;
 
@@ -46,6 +48,17 @@ export class ObsidianApp {
 
 		const result = await this.getVault().modify(file, targetData);
 		return result;
+	}
+
+	triggerEvent(name: typeof LISTENER) {
+		this.app.workspace.trigger(name);
+	}
+
+	listenEvent<T>(name: typeof LISTENER, callback: () => T) {
+		// @ts-ignore
+		this.app.workspace.on(name, () => {
+			callback();
+		});
 	}
 
 	private getApp(): App {
