@@ -40,7 +40,7 @@ export class WriteHighlightController {
 
 			const promises = userHighlights.map(async (highlight) => {
 				const existFile = allFiles.find((file) =>
-					this.isExistFile({ file, url: highlight.url }),
+					this.isExistFile({ file, folder, url: highlight.url }),
 				);
 				if (existFile) {
 					this.obApp.updateFile({
@@ -147,13 +147,20 @@ ${text}
 		return text;
 	}
 
-	private isExistFile({ file, url }: { file: TFile; url: string }) {
+	private isExistFile({
+		file,
+		folder,
+		url,
+	}: { file: TFile; folder: string; url: string }) {
 		const cachedMetadata = this.obApp.getFileMetadataCache(file);
 		if (!cachedMetadata) {
 			return;
 		}
 
-		return cachedMetadata.frontmatter?.URL === url;
+		return (
+			cachedMetadata.frontmatter?.URL === url &&
+			file.path.startsWith(`${folder}/`)
+		);
 	}
 
 	private updateLastUpdate() {
