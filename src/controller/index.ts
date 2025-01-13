@@ -1,1 +1,1 @@
-export { WriteHighlightController } from "./write-highlights-controller";
+export { ImportHighlightsController } from "./import-highlights-controller";

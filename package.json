@@ -6,6 +6,7 @@
 	"scripts": {
 		"dev": "node esbuild.config.mjs",
 		"build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+		"tsc": "tsc -noEmit",
 		"format:fix": "biome format --write src",
 		"format:check": "biome format src",
 		"lint:fix": "biome check --write --unsafe src",

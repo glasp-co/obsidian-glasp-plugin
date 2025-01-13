@@ -16,7 +16,7 @@ type Constructor = {
 	storageData: StorageData;
 };
 
-export class WriteHighlightController {
+export class ImportHighlightsController {
 	private obApp: ObsidianApp;
 	private obPlugin: ObsidianPlugin;
 	private storageData: StorageData;

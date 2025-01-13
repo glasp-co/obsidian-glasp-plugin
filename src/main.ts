@@ -1,6 +1,6 @@
 import { Plugin, addIcon } from "obsidian";
 import glaspIcon from "src/assets/glasp.svg";
-import { WriteHighlightController } from "./controller";
+import { ImportHighlightsController } from "./controller";
 import { ObsidianApp, ObsidianPlugin } from "./obsidian-api";
 import { SettingTab } from "./setting";
 import type { StorageData } from "./types/storage";
@@ -25,7 +25,7 @@ export default class ObsidianGlaspPlugin extends Plugin {
 		this.addSettingTab(this.settings);
 		this.addLeftBarIcon();
 		this.addCommandToPalette();
-		this.writeHighlights();
+		this.importHighlights();
 		this.registerAutoUpdate();
 
 		this.updateFrequencyChangedListener();
@@ -43,7 +43,7 @@ export default class ObsidianGlaspPlugin extends Plugin {
 		this.autoUpdateInterval = this.registerInterval(
 			window.setInterval(
 				() => {
-					this.writeHighlights();
+					this.importHighlights();
 				},
 				interval * 60 * 1000,
 			),
@@ -59,7 +59,7 @@ export default class ObsidianGlaspPlugin extends Plugin {
 	private addLeftBarIcon() {
 		addIcon("glasp", glaspIcon);
 		this.addRibbonIcon("glasp", "Import Glasp Highlights", () => {
-			this.writeHighlights();
+			this.importHighlights();
 		});
 	}
 
@@ -68,12 +68,12 @@ export default class ObsidianGlaspPlugin extends Plugin {
 			id: "import-glasp-highlights",
 			name: "Import Glasp Highlights",
 			callback: () => {
-				this.writeHighlights();
+				this.importHighlights();
 			},
 		});
 	}
 
-	private async writeHighlights() {
+	private async importHighlights() {
 		const storageData = await this.getStorageData();
 
 		if (
@@ -84,7 +84,7 @@ export default class ObsidianGlaspPlugin extends Plugin {
 			return;
 		}
 
-		const controller = new WriteHighlightController({
+		const controller = new ImportHighlightsController({
 			obApp: this.obApp,
 			obPlugin: this.obPlugin,
 			storageData,
