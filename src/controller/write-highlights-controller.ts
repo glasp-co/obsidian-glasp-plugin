@@ -116,7 +116,8 @@ ${highlight.document_note}
 		}
 
 		content += "#### Highlights & Notes\n";
-		highlight.highlights.forEach((highlight, i) => {
+		// biome-ignore lint/complexity/noForEach:
+		highlight.highlights.forEach((highlight) => {
 			const text = this.modifyHighlightText(highlight);
 			content += `
 ${text}
