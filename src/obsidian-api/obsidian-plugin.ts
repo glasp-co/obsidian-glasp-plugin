@@ -1,5 +1,5 @@
+import type { StorageData } from "src/types/storage";
 import type ObsidianGlaspPlugin from "../main";
-import type { SettingData } from "../setting";
 
 type P = ObsidianGlaspPlugin;
 
@@ -10,7 +10,7 @@ export class ObsidianPlugin {
 		this.plugin = plugin;
 	}
 
-	async saveData(data: SettingData) {
+	async saveData(data: StorageData) {
 		await this.plugin.saveData(data);
 	}
 }

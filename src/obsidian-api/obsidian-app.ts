@@ -1,5 +1,5 @@
 import { compile } from "handlebars";
-import type { App, TFile, TFolder, Vault } from "obsidian";
+import type { App, CachedMetadata, TFile, TFolder, Vault } from "obsidian";
 
 export class ObsidianApp {
 	private app: App;
@@ -17,6 +17,10 @@ export class ObsidianApp {
 		return this.getVault().getFiles();
 	}
 
+	getFileMetadataCache(file: TFile): CachedMetadata | null {
+		return this.app.metadataCache.getFileCache(file);
+	}
+
 	async createFile<T>({
 		folder,
 		filename,
@@ -29,6 +33,18 @@ export class ObsidianApp {
 		const path = `${folder}/${filename}.md`;
 
 		const result = await this.getVault().create(path, targetData);
+		return result;
+	}
+
+	async updateFile<T>({
+		file,
+		template,
+		data,
+	}: { file: TFile; template: string; data: T }) {
+		const templateDelegator = compile(template, { noEscape: true });
+		const targetData = templateDelegator(data);
+
+		const result = await this.getVault().modify(file, targetData);
 		return result;
 	}
 
