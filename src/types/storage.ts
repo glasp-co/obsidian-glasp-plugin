@@ -7,7 +7,7 @@ export type StorageData = {
 
 /**
  * 60 : 1h
- * 1440: 1day
+ * 1440 : 1day
  * 10080 : 1week
  */
 export type UpdateFrequency = "60" | "1440" | "10080";
