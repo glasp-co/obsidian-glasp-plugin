@@ -1,6 +1,6 @@
 import { Plugin, addIcon } from "obsidian";
 import glaspIcon from "src/assets/glasp.svg";
-import { ImportHighlightsController } from "./controller";
+import { ImportHighlights } from "./core/import-highlights";
 import { ObsidianApp, ObsidianPlugin } from "./obsidian-api";
 import { SettingTab } from "./setting";
 import type { StorageData } from "./types/storage";
@@ -84,7 +84,7 @@ export default class ObsidianGlaspPlugin extends Plugin {
 			return;
 		}
 
-		const controller = new ImportHighlightsController({
+		const controller = new ImportHighlights({
 			obApp: this.obApp,
 			obPlugin: this.obPlugin,
 			storageData,

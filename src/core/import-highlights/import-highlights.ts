@@ -2,13 +2,14 @@ import type { TFile } from "obsidian";
 import { HIGHLIGHT_TEMPLATE } from "src/constant/template";
 import { GlaspHighlightAPI } from "src/glasp-api";
 import { APIError } from "src/glasp-api/error";
-import type { Highlight, UserHighlight } from "src/glasp-api/highlight/type";
+import type { UserHighlight } from "src/glasp-api/highlight/type";
 import {
 	type ObsidianApp,
 	ObsidianNotice,
 	type ObsidianPlugin,
 } from "src/obsidian-api";
 import type { StorageData } from "src/types/storage";
+import { normalizeHighlight } from "./normalize-highlight";
 
 type Constructor = {
 	obApp: ObsidianApp;
@@ -16,7 +17,7 @@ type Constructor = {
 	storageData: StorageData;
 };
 
-export class ImportHighlightsController {
+export class ImportHighlights {
 	private obApp: ObsidianApp;
 	private obPlugin: ObsidianPlugin;
 	private storageData: StorageData;
@@ -53,14 +54,14 @@ export class ImportHighlightsController {
 					this.obApp.updateFile({
 						file: existFile,
 						template: HIGHLIGHT_TEMPLATE,
-						data: this.normalizeHighlight(highlight),
+						data: normalizeHighlight(highlight),
 					});
 				} else {
 					this.obApp.createFile({
 						folder,
 						filename: highlight.title,
 						template: HIGHLIGHT_TEMPLATE,
-						data: this.normalizeHighlight(highlight),
+						data: normalizeHighlight(highlight),
 					});
 				}
 			});
@@ -115,48 +116,6 @@ export class ImportHighlightsController {
 			updatedAfter,
 			pageCursor: response.nextPageCursor,
 		});
-	}
-
-	private normalizeHighlight(highlight: UserHighlight) {
-		let content = "";
-		if (highlight.document_note) {
-			content += "#### Thoughts & Comments\n";
-			content += `
-${highlight.document_note}
-
-`;
-		}
-
-		content += "#### Highlights & Notes\n";
-		// biome-ignore lint/complexity/noForEach:
-		highlight.highlights.forEach((highlight) => {
-			const text = this.modifyHighlightText(highlight);
-			content += `
-${text}
-`;
-		});
-
-		return {
-			url: highlight.url,
-			tags: highlight.tags,
-			content,
-		};
-	}
-
-	private modifyHighlightText(highlight: Highlight) {
-		let text = `> ${highlight.text}`;
-		if (text.includes("\n")) {
-			text = text.replace(/\n/g, "");
-		}
-
-		if (highlight.note) {
-			text += `
----
-  **note:**
-  ${highlight.note}
-`;
-		}
-		return text;
 	}
 
 	private isExistFile({
