@@ -1,4 +1,5 @@
 import { type RequestUrlParam, requestUrl } from "obsidian";
+import { APIError } from "./error";
 
 type Constructor = {
 	accessToken: string;
@@ -23,7 +24,15 @@ export class GlaspAPIClient {
 			headers,
 			method: "GET",
 		};
-		const response = await requestUrl(params);
-		return response.json;
+
+		try {
+			const response = await requestUrl(params);
+			return response.json;
+		} catch (e) {
+			if ("status" in e) {
+				throw new APIError({ status: e.status });
+			}
+			throw new APIError({ status: 500 });
+		}
 	}
 }

@@ -28,6 +28,7 @@ export class GlaspHighlightAPI {
 		const response = await this.client.get<HighlightsResponse>(
 			`/v1/highlights/export?${queryParams.toString()}`,
 		);
+
 		return response;
 	}
 }
