@@ -18,6 +18,12 @@ ${userHighlight.document_note}
 ${text}
 `;
 	});
+
+	return {
+		url: userHighlight.url,
+		tags: userHighlight.tags,
+		content,
+	};
 };
 
 const modifyHighlightText = (highlight: Highlight) => {
