@@ -28,6 +28,8 @@ export class WriteHighlightController {
 	}
 
 	async run({ accessToken, folder }: { accessToken: string; folder: string }) {
+		new ObsidianNotice("Updating Highlights from Glasp");
+
 		try {
 			const userHighlights: UserHighlight[] = [];
 			await this.pagingFetch({

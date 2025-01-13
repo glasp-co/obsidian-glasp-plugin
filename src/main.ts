@@ -1,7 +1,7 @@
 import { Plugin, addIcon } from "obsidian";
 import glaspIcon from "src/assets/glasp.svg";
 import { WriteHighlightController } from "./controller";
-import { ObsidianApp, ObsidianNotice, ObsidianPlugin } from "./obsidian-api";
+import { ObsidianApp, ObsidianPlugin } from "./obsidian-api";
 import { SettingTab } from "./setting";
 import type { StorageData } from "./types/storage";
 
@@ -83,8 +83,6 @@ export default class ObsidianGlaspPlugin extends Plugin {
 		) {
 			return;
 		}
-
-		new ObsidianNotice("Updating Highlights from Glasp");
 
 		const controller = new WriteHighlightController({
 			obApp: this.obApp,
