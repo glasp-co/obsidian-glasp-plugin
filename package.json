@@ -2,7 +2,7 @@
 	"name": "obsidian-glasp-plugin",
 	"version": "0.1.0",
 	"description": "Obsidian plugin to import your Glasp Highlights into your vault.",
-	"main": "dist/main.js",
+	"main": "main.js",
 	"scripts": {
 		"dev": "node esbuild.config.mjs",
 		"build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
@@ -14,8 +14,8 @@
 		"lint:check": "biome check src",
 		"prepare": "lefthook install"
 	},
-	"keywords": [],
-	"author": "",
+	"keywords": ["obsidian", "glasp"],
+	"author": "Glasp",
 	"license": "MIT",
 	"devDependencies": {
 		"@biomejs/biome": "1.9.4",
