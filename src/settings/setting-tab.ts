@@ -1,29 +1,21 @@
 import { PluginSettingTab, Setting } from "obsidian";
 import type ObsidianGlaspPlugin from "../main";
-import type { ObsidianApp, ObsidianPlugin } from "../obsidian-api";
-import type { StorageData } from "../types/storage";
-
-type Constructor = {
-	obApp: ObsidianApp;
-	obPlugin: ObsidianPlugin;
-	glaspPlugin: ObsidianGlaspPlugin;
-	storageData: Partial<StorageData>;
-};
+import { ObsidianApp, ObsidianPlugin } from "../obsidian-api";
+import type { SettingData } from "../setting";
 
 export class SettingTab extends PluginSettingTab {
 	private obApp: ObsidianApp;
 	private obPlugin: ObsidianPlugin;
-	value: StorageData;
+	private value: SettingData;
 
-	constructor({ obApp, obPlugin, glaspPlugin, storageData }: Constructor) {
-		super(glaspPlugin.app, glaspPlugin);
+	constructor(plugin: ObsidianGlaspPlugin, data: Partial<SettingData>) {
+		super(plugin.app, plugin);
 
-		this.obPlugin = obPlugin;
-		this.obApp = obApp;
+		this.obPlugin = new ObsidianPlugin(plugin);
+		this.obApp = new ObsidianApp(plugin.app);
 		this.value = {
-			accessToken: storageData.accessToken ?? "",
-			folder: storageData.folder ?? "",
-			lastUpdated: storageData.lastUpdated ?? "",
+			accessToken: data.accessToken ?? "",
+			folder: data.folder ?? "",
 		};
 	}
 
@@ -48,7 +40,6 @@ export class SettingTab extends PluginSettingTab {
 				text
 					.setPlaceholder("Access Token")
 					.setValue(this.value.accessToken)
-					// TODO: add validation
 					.onChange(async (value) => {
 						this.value.accessToken = value;
 						await this.obPlugin.saveData(this.value);

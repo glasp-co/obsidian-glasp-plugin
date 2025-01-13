@@ -12,9 +12,21 @@ export class GlaspHighlightAPI {
 		this.client = new GlaspAPIClient({ accessToken });
 	}
 
-	async fetchHighlights() {
+	async fetchHighlights(args?: { pageCursor?: string; updatedAfter?: string }) {
+		const queryParams = new URLSearchParams();
+		if (args?.pageCursor) {
+			queryParams.append("pageCursor", args.pageCursor);
+		}
+		if (args?.updatedAfter) {
+			queryParams.append("updatedAfter", args.updatedAfter);
+		}
+
+		/**
+		 * API Document
+		 * @see https://glasp.co/docs/api
+		 */
 		const response = await this.client.get<HighlightsResponse>(
-			"/v1/highlights/export",
+			`/v1/highlights/export?${queryParams.toString()}`,
 		);
 		return response;
 	}

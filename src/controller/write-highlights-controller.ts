@@ -1,36 +1,111 @@
+import { Notice, type TFile } from "obsidian";
 import { HIGHLIGHT_TEMPLATE } from "src/constant/template";
 import { GlaspHighlightAPI } from "src/glasp-api";
 import type { Highlight, UserHighlight } from "src/glasp-api/highlight/type";
-import type { ObsidianApp } from "src/obsidian-api";
+import type { ObsidianApp, ObsidianPlugin } from "src/obsidian-api";
+import type { StorageData } from "src/types/storage";
+
+type Constructor = {
+	obApp: ObsidianApp;
+	obPlugin: ObsidianPlugin;
+	storageData: StorageData;
+};
 
 export class WriteHighlightController {
 	private obApp: ObsidianApp;
+	private obPlugin: ObsidianPlugin;
+	private storageData: StorageData;
 
-	constructor(obApp: ObsidianApp) {
+	constructor({ obApp, obPlugin, storageData }: Constructor) {
 		this.obApp = obApp;
+		this.obPlugin = obPlugin;
+		this.storageData = storageData;
 	}
 
 	async run({ accessToken, folder }: { accessToken: string; folder: string }) {
-		const highlightAPI = new GlaspHighlightAPI({ accessToken });
-		const response = await highlightAPI.fetchHighlights();
+		try {
+			const userHighlights: UserHighlight[] = [];
+			await this.pagingFetch({
+				accessToken,
+				userHighlights,
+				updatedAfter: this.storageData.lastUpdated,
+			});
+			this.updateLastUpdate();
 
-		const fileNames = this.obApp.getAllFiles().map((file) => file.name);
+			if (!userHighlights.length) {
+				return;
+			}
 
-		const promises = response.results
-			.filter((result) => !fileNames.includes(result.title))
-			.map(async (highlight) => {
-				this.obApp.createFile({
-					folder,
-					filename: highlight.title,
-					template: HIGHLIGHT_TEMPLATE,
-					data: this.parseHighlight(highlight),
-				});
+			const allFiles = this.obApp.getAllFiles();
+
+			const promises = userHighlights.map(async (highlight) => {
+				const existFile = allFiles.find((file) =>
+					this.isExistFile({ file, url: highlight.url }),
+				);
+				if (existFile) {
+					this.obApp.updateFile({
+						file: existFile,
+						template: HIGHLIGHT_TEMPLATE,
+						data: this.normalizeHighlight(highlight),
+					});
+				} else {
+					this.obApp.createFile({
+						folder,
+						filename: highlight.title,
+						template: HIGHLIGHT_TEMPLATE,
+						data: this.normalizeHighlight(highlight),
+					});
+				}
 			});
 
-		await Promise.all(promises);
+			await Promise.all(promises);
+		} catch (e) {
+			console.error(e);
+			new Notice("failed to update Highlights");
+		}
 	}
 
-	private parseHighlight(highlight: UserHighlight) {
+	// fetch recursively
+	private async pagingFetch({
+		accessToken,
+		userHighlights,
+		updatedAfter,
+		pageCursor,
+	}: {
+		accessToken: string;
+		userHighlights: UserHighlight[];
+		updatedAfter?: string;
+		pageCursor?: string;
+	}) {
+		const highlightAPI = new GlaspHighlightAPI({ accessToken });
+		const response = await highlightAPI.fetchHighlights({
+			pageCursor,
+			updatedAfter,
+		});
+
+		if (!response.results.length) {
+			return;
+		}
+
+		if (response.results.length < 50) {
+			userHighlights.push(...response.results);
+			return;
+		}
+
+		if (!response.nextPageCursor) {
+			return;
+		}
+
+		userHighlights.push(...response.results);
+		await this.pagingFetch({
+			accessToken,
+			userHighlights,
+			updatedAfter,
+			pageCursor: response.nextPageCursor,
+		});
+	}
+
+	private normalizeHighlight(highlight: UserHighlight) {
 		let content = "";
 		if (highlight.document_note) {
 			content += "#### Thoughts & Comments\n";
@@ -42,7 +117,7 @@ ${highlight.document_note}
 
 		content += "#### Highlights & Notes\n";
 		highlight.highlights.forEach((highlight, i) => {
-			const text = this.parseHighlightContent(highlight);
+			const text = this.modifyHighlightText(highlight);
 			content += `
 ${text}
 `;
@@ -55,7 +130,7 @@ ${text}
 		};
 	}
 
-	private parseHighlightContent(highlight: Highlight) {
+	private modifyHighlightText(highlight: Highlight) {
 		let text = `> ${highlight.text}`;
 		if (text.includes("\n")) {
 			text = text.replace(/\n/g, "");
@@ -69,5 +144,19 @@ ${text}
 `;
 		}
 		return text;
+	}
+
+	private isExistFile({ file, url }: { file: TFile; url: string }) {
+		const cachedMetadata = this.obApp.getFileMetadataCache(file);
+		if (!cachedMetadata) {
+			return;
+		}
+
+		return cachedMetadata.frontmatter?.URL === url;
+	}
+
+	private updateLastUpdate() {
+		this.storageData.lastUpdated = new Date().toISOString();
+		this.obPlugin.saveData(this.storageData);
 	}
 }
