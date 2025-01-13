@@ -6,5 +6,5 @@
 	"description": "Obsidian plugin to import your Glasp Highlights into your vault.",
 	"author": "Glasp,inc.",
 	"authorUrl": "https://github.com/glasp-co",
-	"isDesktopOnly": true
+	"isDesktopOnly": false
 }
