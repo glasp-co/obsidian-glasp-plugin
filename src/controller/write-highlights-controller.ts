@@ -1,8 +1,13 @@
-import { Notice, type TFile } from "obsidian";
+import type { TFile } from "obsidian";
 import { HIGHLIGHT_TEMPLATE } from "src/constant/template";
 import { GlaspHighlightAPI } from "src/glasp-api";
+import { APIError } from "src/glasp-api/error";
 import type { Highlight, UserHighlight } from "src/glasp-api/highlight/type";
-import type { ObsidianApp, ObsidianPlugin } from "src/obsidian-api";
+import {
+	type ObsidianApp,
+	ObsidianNotice,
+	type ObsidianPlugin,
+} from "src/obsidian-api";
 import type { StorageData } from "src/types/storage";
 
 type Constructor = {
@@ -60,8 +65,13 @@ export class WriteHighlightController {
 
 			await Promise.all(promises);
 		} catch (e) {
-			console.error(e);
-			new Notice("failed to update Highlights");
+			if (e instanceof APIError) {
+				if (e.status === 401) {
+					new ObsidianNotice("Access Token is invalid");
+					return;
+				}
+			}
+			new ObsidianNotice("failed to update Highlights");
 		}
 	}
 
