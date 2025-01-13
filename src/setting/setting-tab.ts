@@ -48,7 +48,6 @@ export class SettingTab extends PluginSettingTab {
 				text
 					.setPlaceholder("Access Token")
 					.setValue(this.value.accessToken)
-					// TODO: add validation
 					.onChange(async (value) => {
 						this.value.accessToken = value;
 						await this.obPlugin.saveData(this.value);

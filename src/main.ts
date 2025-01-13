@@ -21,10 +21,28 @@ export default class ObsidianGlaspPlugin extends Plugin {
 		});
 		this.addSettingTab(this.settings);
 		this.addLeftBarIcon();
+		this.addCommandToPalette();
 		this.writeHighlights();
 	}
 
 	onunload() {}
+
+	private addLeftBarIcon() {
+		addIcon("glasp", glaspIcon);
+		this.addRibbonIcon("glasp", "Import Glasp Highlights", () => {
+			this.writeHighlights();
+		});
+	}
+
+	private addCommandToPalette() {
+		this.addCommand({
+			id: "import-glasp-highlights",
+			name: "Import Glasp Highlights",
+			callback: () => {
+				this.writeHighlights();
+			},
+		});
+	}
 
 	private async writeHighlights() {
 		new Notice("Updating Highlights from Glasp");
@@ -40,13 +58,6 @@ export default class ObsidianGlaspPlugin extends Plugin {
 		await controller.run({
 			accessToken: this.settings.value.accessToken,
 			folder: this.settings.value.folder,
-		});
-	}
-
-	private addLeftBarIcon() {
-		addIcon("glasp", glaspIcon);
-		this.addRibbonIcon("glasp", "Glasp Highlights", () => {
-			this.writeHighlights();
 		});
 	}
 
