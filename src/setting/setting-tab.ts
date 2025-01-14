@@ -21,10 +21,10 @@ export class SettingTab extends PluginSettingTab {
 		this.obPlugin = obPlugin;
 		this.obApp = obApp;
 		this.value = {
-			accessToken: storageData.accessToken ?? "",
-			folder: storageData.folder ?? "",
-			lastUpdated: storageData.lastUpdated ?? "",
-			updateFrequency: storageData.updateFrequency ?? "1440",
+			accessToken: storageData?.accessToken ?? "",
+			folder: storageData?.folder ?? "",
+			lastUpdated: storageData?.lastUpdated ?? "",
+			updateFrequency: storageData?.updateFrequency ?? "1440",
 		};
 		this.obPlugin.saveData(this.value);
 	}
@@ -39,7 +39,7 @@ export class SettingTab extends PluginSettingTab {
 	}
 
 	private displayTitle(containerEl: HTMLElement): void {
-		containerEl.createEl("h2", { text: "Obsidian Glasp Plugin" });
+		containerEl.createEl("h2", { text: "Glasp" });
 		return;
 	}
 
