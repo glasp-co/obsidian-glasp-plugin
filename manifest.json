@@ -1,10 +1,10 @@
 {
 	"id": "obsidian-glasp-plugin",
-	"name": "Obsidian Glasp Plugin",
+	"name": "Glasp",
 	"version": "0.1.0",
 	"minAppVersion": "0.1.0",
-	"description": "Obsidian plugin to import your Glasp Highlights into your vault.",
-	"author": "Glasp,inc.",
-	"authorUrl": "https://github.com/glasp-co",
+	"description": "Import your Glasp highlights and notes into your vault.",
+	"author": "Glasp",
+	"authorUrl": "https://glasp.co",
 	"isDesktopOnly": false
 }

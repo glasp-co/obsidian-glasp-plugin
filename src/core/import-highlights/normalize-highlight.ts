@@ -4,19 +4,14 @@ export const normalizeHighlight = (userHighlight: UserHighlight) => {
 	let content = "";
 	if (userHighlight.document_note) {
 		content += "#### Thoughts & Comments\n";
-		content += `
-${userHighlight.document_note}
-
-`;
+		content += `${userHighlight.document_note}`;
 	}
 
-	content += "#### Highlights & Notes\n";
+	content += "#### Highlights & Notes\n\n";
 	// biome-ignore lint/complexity/noForEach:
 	userHighlight.highlights.forEach((highlight) => {
 		const text = modifyHighlightText(highlight);
-		content += `
-${text}
-`;
+		content += `${text}\n\n`;
 	});
 
 	return {
@@ -33,11 +28,7 @@ const modifyHighlightText = (highlight: Highlight) => {
 	}
 
 	if (highlight.note) {
-		text += `
----
-  **note:**
-  ${highlight.note}
-`;
+		text += `\n- ${highlight.note}`;
 	}
 	return text;
 };

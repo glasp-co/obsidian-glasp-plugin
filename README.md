@@ -1,8 +1,8 @@
 ## obsidian-glasp-plugin
 ![CI](https://github.com/glasp-co/obsidian-glasp-plugin/actions/workflows/ci.yml/badge.svg)
 
-This plugin is to import [Glasp](https://glasp.co/) Highlights into [Obsidian](https://obsidian.md/).
-This plugin syncs your Glasp Highlights to a Note located in a specified folder in Obsidian.
+This plugin is to import [Glasp](https://glasp.co/) highlights and notes into [Obsidian](https://obsidian.md/).
+This plugin syncs your Glasp highlights and notes to a Note located in a specified folder in Obsidian.
 
 ### Usage
 1. Generate a Glasp Access Token from [here](https://glasp.co/settings/access_token)
