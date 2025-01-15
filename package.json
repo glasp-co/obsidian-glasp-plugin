@@ -1,6 +1,6 @@
 {
 	"name": "obsidian-glasp-plugin",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"description": "Obsidian plugin to import your Glasp Highlights into your vault.",
 	"main": "main.js",
 	"scripts": {
