@@ -65,8 +65,8 @@ export default class ObsidianGlaspPlugin extends Plugin {
 
 	private addCommandToPalette() {
 		this.addCommand({
-			id: "import-glasp-highlights",
-			name: "Import Glasp Highlights",
+			id: "import-highlights",
+			name: "Import Highlights",
 			callback: () => {
 				this.importHighlights();
 			},
