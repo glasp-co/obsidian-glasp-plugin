@@ -48,7 +48,9 @@ describe("normalizeHighlight", () => {
 			const result = normalizeHighlight(BASE_USER_HIGHLIGHT);
 			expect(result.content).not.toContain("#### Thoughts & Comments");
 			expect(result.url).toBeTruthy();
+			expect(result.glasp_url).toBeTruthy();
 			expect(result.tags).toBeDefined();
+			expect(result.updated_at).toBe("2025-01-13");
 		});
 	});
 
@@ -97,7 +99,9 @@ describe("normalizeHighlight", () => {
 			const result = normalizeHighlight(BASE_USER_HIGHLIGHT);
 			expect(result.content).toContain("#### Thoughts & Comments");
 			expect(result.url).toBeTruthy();
+			expect(result.glasp_url).toBeTruthy();
 			expect(result.tags).toBeDefined();
+			expect(result.updated_at).toBe("2025-01-13");
 		});
 	});
 
@@ -150,6 +154,8 @@ describe("normalizeHighlight", () => {
 			`> ${BASE_USER_HIGHLIGHT.highlights[1].text}`,
 		);
 		expect(result.url).toBeTruthy();
+		expect(result.glasp_url).toBeTruthy();
 		expect(result.tags).toBeDefined();
+		expect(result.updated_at).toBe("2025-01-13");
 	});
 });

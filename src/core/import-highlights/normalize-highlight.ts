@@ -1,4 +1,4 @@
-import { moment } from "obsidian";
+import moment from "moment";
 import type { Highlight, UserHighlight } from "src/glasp-api/highlight/type";
 
 export const normalizeHighlight = (userHighlight: UserHighlight) => {
@@ -24,7 +24,7 @@ export const normalizeHighlight = (userHighlight: UserHighlight) => {
 		url: userHighlight.url,
 		glasp_url: userHighlight.glasp_url,
 		tags: userHighlight.tags.map((tag) => tag.trim().replace(/\s+/g, "-")),
-		updated_at: moment(userHighlight.updated_at).format("YYYY-MM-DD"),
+		updated_at: moment.utc(userHighlight.updated_at).format("YYYY-MM-DD"),
 		content,
 	};
 };
