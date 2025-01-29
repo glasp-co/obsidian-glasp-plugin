@@ -58,7 +58,7 @@ export default class ObsidianGlaspPlugin extends Plugin {
 
 	private addLeftBarIcon() {
 		addIcon("glasp", glaspIcon);
-		this.addRibbonIcon("glasp", "Import Glasp Highlights", () => {
+		this.addRibbonIcon("glasp", "Import Glasp highlights", () => {
 			this.importHighlights();
 		});
 	}
@@ -66,7 +66,7 @@ export default class ObsidianGlaspPlugin extends Plugin {
 	private addCommandToPalette() {
 		this.addCommand({
 			id: "import-highlights",
-			name: "Import Highlights",
+			name: "Import highlights",
 			callback: () => {
 				this.importHighlights();
 			},
