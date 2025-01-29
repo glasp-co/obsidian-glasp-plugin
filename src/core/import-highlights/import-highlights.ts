@@ -29,7 +29,7 @@ export class ImportHighlights {
 	}
 
 	async run({ accessToken, folder }: { accessToken: string; folder: string }) {
-		new ObsidianNotice("Updating Highlights from Glasp");
+		new ObsidianNotice("Updating highlights from Glasp");
 
 		try {
 			const userHighlights: UserHighlight[] = [];
@@ -70,11 +70,11 @@ export class ImportHighlights {
 		} catch (e) {
 			if (e instanceof APIError) {
 				if (e.status === 401) {
-					new ObsidianNotice("Access Token is invalid");
+					new ObsidianNotice("Access token is invalid");
 					return;
 				}
 			}
-			new ObsidianNotice("failed to update Highlights");
+			new ObsidianNotice("Failed to update highlights");
 		}
 	}
 

@@ -1,10 +1,16 @@
+import moment from "moment";
 import type { Highlight, UserHighlight } from "src/glasp-api/highlight/type";
 
 export const normalizeHighlight = (userHighlight: UserHighlight) => {
 	let content = "";
+	if (userHighlight.summary) {
+		content += "#### Summary\n";
+		content += `${userHighlight.summary}\n\n`;
+	}
+
 	if (userHighlight.document_note) {
 		content += "#### Thoughts & Comments\n";
-		content += `${userHighlight.document_note}`;
+		content += `${userHighlight.document_note}\n\n`;
 	}
 
 	content += "#### Highlights & Notes\n\n";
@@ -16,7 +22,9 @@ export const normalizeHighlight = (userHighlight: UserHighlight) => {
 
 	return {
 		url: userHighlight.url,
-		tags: userHighlight.tags,
+		glasp_url: userHighlight.glasp_url,
+		tags: userHighlight.tags.map((tag) => tag.trim().replace(/\s+/g, "-")),
+		updated_at: moment.utc(userHighlight.updated_at).format("YYYY-MM-DD"),
 		content,
 	};
 };

@@ -1,4 +1,4 @@
-## obsidian-glasp-plugin
+## Glasp Obsidian Plugin
 ![CI](https://github.com/glasp-co/obsidian-glasp-plugin/actions/workflows/ci.yml/badge.svg)
 
 This plugin is to import [Glasp](https://glasp.co/) highlights and notes into [Obsidian](https://obsidian.md/).
