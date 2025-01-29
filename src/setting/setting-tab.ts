@@ -32,15 +32,9 @@ export class SettingTab extends PluginSettingTab {
 	async display(): Promise<void> {
 		const { containerEl } = this;
 		containerEl.empty();
-		this.displayTitle(containerEl);
 		this.displayAccessToken(containerEl);
 		this.displaySelectFiles(containerEl);
 		this.displaySelectRefreshTime(containerEl);
-	}
-
-	private displayTitle(containerEl: HTMLElement): void {
-		containerEl.createEl("h2", { text: "Glasp" });
-		return;
 	}
 
 	private displayAccessToken(containerEl: HTMLElement): void {
@@ -48,7 +42,7 @@ export class SettingTab extends PluginSettingTab {
 
 		const descriptionDocumentFragment = document.createDocumentFragment();
 		const baseFragment = descriptionDocumentFragment.createEl("span", {
-			text: "Find your Access Token from ",
+			text: "Find your access token from ",
 		});
 		const linkFragment = descriptionDocumentFragment.createEl("a", {
 			href: ACCESS_TOKEN_SETTING_URL,
@@ -59,12 +53,12 @@ export class SettingTab extends PluginSettingTab {
 		descriptionDocumentFragment.appendChild(linkFragment);
 
 		new Setting(containerEl)
-			.setName("Access Token")
-			.setDesc("Set Access Token")
+			.setName("Access token")
+			.setDesc("Set access token")
 			.setDesc(descriptionDocumentFragment)
 			.addText((text) => {
 				text
-					.setPlaceholder("Access Token")
+					.setPlaceholder("Access token")
 					.setValue(this.value.accessToken)
 					.onChange(async (value) => {
 						this.value.accessToken = value;
@@ -84,8 +78,8 @@ export class SettingTab extends PluginSettingTab {
 		);
 
 		new Setting(containerEl)
-			.setName("Output Folder")
-			.setDesc("Select the file to which Glasp Highlights will be exported")
+			.setName("Output folder")
+			.setDesc("Select the file to which Glasp highlights will be exported")
 			.addDropdown((value) => {
 				value
 					.addOptions(options)
@@ -100,14 +94,14 @@ export class SettingTab extends PluginSettingTab {
 
 	private displaySelectRefreshTime(containerEl: HTMLElement): void {
 		const OPTIONS: Record<UpdateFrequency, string> = {
-			"60": "once a hour",
-			"1440": "once a day",
-			"10080": "once a week",
+			"60": "Every hour",
+			"1440": "Every day",
+			"10080": "Once a week",
 		};
 
 		new Setting(containerEl)
 			.setName("Update frequency")
-			.setDesc("Select the update frequency of Highlights")
+			.setDesc("Select the update frequency of highlights")
 			.addDropdown((value) => {
 				value
 					.addOptions(OPTIONS)
