@@ -29,7 +29,7 @@ export class ImportHighlights {
 	}
 
 	async run({ accessToken, folder }: { accessToken: string; folder: string }) {
-		new ObsidianNotice("Updating highlights from Glasp");
+		new ObsidianNotice("Updating highlights");
 
 		try {
 			const userHighlights: UserHighlight[] = [];
