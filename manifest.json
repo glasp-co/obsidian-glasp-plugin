@@ -1,7 +1,7 @@
 {
 	"id": "glasp",
 	"name": "Glasp",
-	"version": "0.1.4",
+	"version": "0.1.5",
 	"minAppVersion": "1.7.7",
 	"description": "Import your Glasp highlights and notes into your vault.",
 	"author": "Glasp",
