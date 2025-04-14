@@ -32,7 +32,7 @@ export class ObsidianApp {
 		const templateDelegator = compile(template, { noEscape: true });
 		const targetData = templateDelegator(data);
 
-		const path = `${folder}/${filename}.md`;
+		const path = `${folder}/${this.escapeFilename(filename)}.md`;
 
 		const result = await this.getVault().create(path, targetData);
 		return result;
@@ -67,5 +67,17 @@ export class ObsidianApp {
 
 	private getVault(): Vault {
 		return this.getApp().vault;
+	}
+
+	private escapeFilename(filename: string): string {
+		const SPECIAL_CHARS = ["[", "]", "|", ":", "\\", "/", "#", "^"];
+
+		const escapedChars = SPECIAL_CHARS.map((char) => {
+			return char.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+		});
+
+		const regex = new RegExp(`[${escapedChars.join("")}]`, "g");
+
+		return filename.replace(regex, "");
 	}
 }
