@@ -9,6 +9,8 @@ This plugin syncs your Glasp highlights and notes to a Note located in a specifi
 2. Install this plugin through the Obsidian Community Plugins, and then enable it
 3. Set the access token generated in step 1 and select the folder to export to
 
+**[Full step-by-step tutorial](https://blog.glasp.co/how-to-export-highlights-into-obsidian/)** — How to Export Highlights from Glasp into Obsidian
+
 ### Local setup
 1. clone this repository into `[VaultFolder]/.obsidian/plugins/`
 2. run `npm i && npm run dev`
