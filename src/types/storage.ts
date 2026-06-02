@@ -1,8 +1,14 @@
 export type StorageData = {
 	accessToken: string;
 	folder: string;
+	kindleFolder: string;
+	/** Custom Handlebars template for web highlights. Empty = use the default. */
+	template: string;
+	/** Custom Handlebars template for Kindle highlights. Empty = use the default. */
+	kindleTemplate: string;
 	updateFrequency: UpdateFrequency;
 	lastUpdated: string;
+	kindleLastUpdated: string;
 };
 
 /**
