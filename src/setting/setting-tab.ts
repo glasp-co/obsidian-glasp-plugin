@@ -1,6 +1,14 @@
 import { PluginSettingTab, Setting } from "obsidian";
+import {
+	HIGHLIGHT_TEMPLATE,
+	KINDLE_HIGHLIGHT_TEMPLATE,
+} from "../constant/template";
 import type ObsidianGlaspPlugin from "../main";
-import type { ObsidianApp, ObsidianPlugin } from "../obsidian-api";
+import {
+	type ObsidianApp,
+	ObsidianNotice,
+	type ObsidianPlugin,
+} from "../obsidian-api";
 import type { StorageData, UpdateFrequency } from "../types/storage";
 
 type Constructor = {
@@ -23,7 +31,11 @@ export class SettingTab extends PluginSettingTab {
 		this.value = {
 			accessToken: storageData?.accessToken ?? "",
 			folder: storageData?.folder ?? "",
+			kindleFolder: storageData?.kindleFolder ?? "",
+			template: storageData?.template ?? "",
+			kindleTemplate: storageData?.kindleTemplate ?? "",
 			lastUpdated: storageData?.lastUpdated ?? "",
+			kindleLastUpdated: storageData?.kindleLastUpdated ?? "",
 			updateFrequency: storageData?.updateFrequency ?? "1440",
 		};
 		this.obPlugin.saveData(this.value);
@@ -34,28 +46,48 @@ export class SettingTab extends PluginSettingTab {
 		containerEl.empty();
 		this.displayAccessToken(containerEl);
 		this.displaySelectFiles(containerEl);
+		this.displaySelectKindleFiles(containerEl);
 		this.displaySelectRefreshTime(containerEl);
+		this.displayAdvancedSettings(containerEl);
+	}
+
+	private displayAdvancedSettings(containerEl: HTMLElement): void {
+		new Setting(containerEl).setName("Advanced").setHeading();
+		this.displayTemplate(containerEl);
+		this.displayKindleTemplate(containerEl);
 	}
 
 	private displayAccessToken(containerEl: HTMLElement): void {
 		const ACCESS_TOKEN_SETTING_URL = "https://glasp.co/settings/access_token";
 
-		const descriptionDocumentFragment = document.createDocumentFragment();
-		const baseFragment = descriptionDocumentFragment.createEl("span", {
-			text: "Find your access token from ",
+		const description = createFragment((fragment) => {
+			fragment.createSpan({ text: "Open this page to generate your token: " });
+			fragment.createEl("a", {
+				href: ACCESS_TOKEN_SETTING_URL,
+				text: ACCESS_TOKEN_SETTING_URL,
+			});
+			fragment.createEl("br");
+			fragment.createEl("small", {
+				text: "Tip: if it opens inside Obsidian, click “Copy link” and paste it into your default browser (Chrome, Safari, etc.) to sign in.",
+			});
 		});
-		const linkFragment = descriptionDocumentFragment.createEl("a", {
-			href: ACCESS_TOKEN_SETTING_URL,
-			text: "here",
-			title: ACCESS_TOKEN_SETTING_URL,
-		});
-		descriptionDocumentFragment.appendChild(baseFragment);
-		descriptionDocumentFragment.appendChild(linkFragment);
+
+		new Setting(containerEl)
+			.setName("Get your access token")
+			.setDesc(description)
+			.addButton((button) => {
+				button
+					.setButtonText("Copy link")
+					.setTooltip("Copy the access token page URL")
+					.onClick(async () => {
+						await navigator.clipboard.writeText(ACCESS_TOKEN_SETTING_URL);
+						new ObsidianNotice("Copied access token URL to clipboard");
+					});
+			});
 
 		new Setting(containerEl)
 			.setName("Access token")
-			.setDesc("Set access token")
-			.setDesc(descriptionDocumentFragment)
+			.setDesc("Paste the token you copied from the page above.")
 			.addText((text) => {
 				text
 					.setPlaceholder("Access token")
@@ -65,24 +97,23 @@ export class SettingTab extends PluginSettingTab {
 						await this.obPlugin.saveData(this.value);
 					});
 			});
-		return;
+	}
+
+	private getFolderOptions(): Record<string, string> {
+		const options: Record<string, string> = { "": "— Not set —" };
+		for (const folder of this.obApp.getAllFolders()) {
+			options[folder.path] = folder.path;
+		}
+		return options;
 	}
 
 	private displaySelectFiles(containerEl: HTMLElement): void {
-		const options = this.obApp.getAllFolders().reduce(
-			(acc, current) => {
-				acc[current.path] = current.path;
-				return acc;
-			},
-			{} as Record<string, string>,
-		);
-
 		new Setting(containerEl)
-			.setName("Output folder")
-			.setDesc("Select the file to which Glasp highlights will be exported")
-			.addDropdown((value) => {
-				value
-					.addOptions(options)
+			.setName("Web highlights output folder")
+			.setDesc("Folder where your Glasp web highlights will be saved")
+			.addDropdown((dropdown) => {
+				dropdown
+					.addOptions(this.getFolderOptions())
 					.setValue(this.value.folder)
 					.onChange(async (value) => {
 						this.value.folder = value;
@@ -90,6 +121,88 @@ export class SettingTab extends PluginSettingTab {
 						this.display();
 					});
 			});
+	}
+
+	private displaySelectKindleFiles(containerEl: HTMLElement): void {
+		new Setting(containerEl)
+			.setName("Kindle highlights output folder")
+			.setDesc(
+				"Folder where your Kindle highlights will be saved. Leave unset to skip Kindle import.",
+			)
+			.addDropdown((dropdown) => {
+				dropdown
+					.addOptions(this.getFolderOptions())
+					.setValue(this.value.kindleFolder)
+					.onChange(async (value) => {
+						this.value.kindleFolder = value;
+						await this.obPlugin.saveData(this.value);
+						this.display();
+					});
+			});
+	}
+
+	private displayTemplateSetting(
+		containerEl: HTMLElement,
+		{
+			name,
+			variables,
+			defaultTemplate,
+			value,
+			onChange,
+		}: {
+			name: string;
+			variables: string;
+			defaultTemplate: string;
+			value: string;
+			onChange: (value: string) => Promise<void>;
+		},
+	): void {
+		const description = createFragment((fragment) => {
+			fragment.createSpan({
+				text: "Customize the note layout. Leave empty to use the default template.",
+			});
+			fragment.createEl("br");
+			fragment.createEl("small", { text: `Available variables: ${variables}` });
+		});
+
+		new Setting(containerEl)
+			.setName(name)
+			.setDesc(description)
+			.addTextArea((textarea) => {
+				textarea
+					.setPlaceholder(defaultTemplate)
+					.setValue(value)
+					.onChange(onChange);
+				textarea.inputEl.rows = 10;
+			});
+	}
+
+	private displayTemplate(containerEl: HTMLElement): void {
+		this.displayTemplateSetting(containerEl, {
+			name: "Web highlights template",
+			variables:
+				"{{url}}, {{glasp_url}}, {{tags}}, {{updated_at}}, {{content}}",
+			defaultTemplate: HIGHLIGHT_TEMPLATE,
+			value: this.value.template,
+			onChange: async (value) => {
+				this.value.template = value;
+				await this.obPlugin.saveData(this.value);
+			},
+		});
+	}
+
+	private displayKindleTemplate(containerEl: HTMLElement): void {
+		this.displayTemplateSetting(containerEl, {
+			name: "Kindle highlights template",
+			variables:
+				"{{url}}, {{glasp_url}}, {{author}}, {{tags}}, {{updated_at}}, {{content}}",
+			defaultTemplate: KINDLE_HIGHLIGHT_TEMPLATE,
+			value: this.value.kindleTemplate,
+			onChange: async (value) => {
+				this.value.kindleTemplate = value;
+				await this.obPlugin.saveData(this.value);
+			},
+		});
 	}
 
 	private displaySelectRefreshTime(containerEl: HTMLElement): void {

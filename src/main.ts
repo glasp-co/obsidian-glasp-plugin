@@ -1,6 +1,10 @@
 import { Plugin, addIcon } from "obsidian";
 import glaspIcon from "src/assets/glasp.svg";
-import { ImportHighlights } from "./core/import-highlights";
+import {
+	ImportHighlights,
+	kindleHighlightSource,
+	webHighlightSource,
+} from "./core/import-highlights";
 import { ObsidianApp, ObsidianPlugin } from "./obsidian-api";
 import { SettingTab } from "./setting";
 import type { StorageData } from "./types/storage";
@@ -76,23 +80,37 @@ export default class ObsidianGlaspPlugin extends Plugin {
 	private async importHighlights() {
 		const storageData = await this.getStorageData();
 
-		if (
-			!storageData.accessToken ||
-			!storageData.folder ||
-			!storageData.updateFrequency
-		) {
+		if (!storageData.accessToken) {
 			return;
 		}
 
-		const controller = new ImportHighlights({
+		const importer = new ImportHighlights({
 			obApp: this.obApp,
 			obPlugin: this.obPlugin,
 			storageData,
 		});
-		await controller.run({
-			accessToken: this.settings.value.accessToken,
-			folder: this.settings.value.folder,
-		});
+
+		// Each source is gated by its own output folder, so users can enable
+		// web highlights, Kindle highlights, or both independently.
+		if (storageData.folder) {
+			await importer.run(
+				webHighlightSource(
+					storageData.accessToken,
+					storageData.folder,
+					storageData.template,
+				),
+			);
+		}
+
+		if (storageData.kindleFolder) {
+			await importer.run(
+				kindleHighlightSource(
+					storageData.accessToken,
+					storageData.kindleFolder,
+					storageData.kindleTemplate,
+				),
+			);
+		}
 	}
 
 	async getStorageData() {

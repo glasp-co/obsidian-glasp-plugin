@@ -1,20 +1,36 @@
 import type { TFile } from "obsidian";
-import { HIGHLIGHT_TEMPLATE } from "src/constant/template";
-import { GlaspHighlightAPI } from "src/glasp-api";
 import { APIError } from "src/glasp-api/error";
-import type { UserHighlight } from "src/glasp-api/highlight/type";
 import {
 	type ObsidianApp,
 	ObsidianNotice,
 	type ObsidianPlugin,
 } from "src/obsidian-api";
 import type { StorageData } from "src/types/storage";
-import { normalizeHighlight } from "./normalize-highlight";
 
 type Constructor = {
 	obApp: ObsidianApp;
 	obPlugin: ObsidianPlugin;
 	storageData: StorageData;
+};
+
+type LastUpdatedKey = "lastUpdated" | "kindleLastUpdated";
+
+/**
+ * Describes one importable highlight source (web or Kindle). The paging,
+ * de-duplication and file creation logic is identical across sources, so the
+ * differences (endpoint, template, normalizer, folder, last-updated cursor)
+ * are injected here.
+ */
+export type HighlightImportSource<T extends { url: string; title: string }> = {
+	label: string;
+	folder: string;
+	template: string;
+	lastUpdatedKey: LastUpdatedKey;
+	fetchPage: (args: {
+		pageCursor?: string;
+		updatedAfter?: string;
+	}) => Promise<{ results: T[]; nextPageCursor: string | null }>;
+	normalize: (item: T) => unknown;
 };
 
 export class ImportHighlights {
@@ -28,40 +44,42 @@ export class ImportHighlights {
 		this.storageData = storageData;
 	}
 
-	async run({ accessToken, folder }: { accessToken: string; folder: string }) {
-		new ObsidianNotice("Updating highlights");
+	async run<T extends { url: string; title: string }>(
+		source: HighlightImportSource<T>,
+	) {
+		new ObsidianNotice(`Updating ${source.label}`);
 
 		try {
-			const userHighlights: UserHighlight[] = [];
+			const items: T[] = [];
 			await this.pagingFetch({
-				accessToken,
-				userHighlights,
-				updatedAfter: this.storageData.lastUpdated,
+				fetchPage: source.fetchPage,
+				items,
+				updatedAfter: this.storageData[source.lastUpdatedKey],
 			});
-			this.updateLastUpdate();
+			this.updateLastUpdate(source.lastUpdatedKey);
 
-			if (!userHighlights.length) {
+			if (!items.length) {
 				return;
 			}
 
 			const allFiles = this.obApp.getAllFiles();
 
-			const promises = userHighlights.map(async (highlight) => {
+			const promises = items.map(async (item) => {
 				const existFile = allFiles.find((file) =>
-					this.isExistFile({ file, folder, url: highlight.url }),
+					this.isExistFile({ file, folder: source.folder, url: item.url }),
 				);
 				if (existFile) {
 					this.obApp.updateFile({
 						file: existFile,
-						template: HIGHLIGHT_TEMPLATE,
-						data: normalizeHighlight(highlight),
+						template: source.template,
+						data: source.normalize(item),
 					});
 				} else {
 					this.obApp.createFile({
-						folder,
-						filename: highlight.title,
-						template: HIGHLIGHT_TEMPLATE,
-						data: normalizeHighlight(highlight),
+						folder: source.folder,
+						filename: item.title,
+						template: source.template,
+						data: source.normalize(item),
 					});
 				}
 			});
@@ -74,34 +92,30 @@ export class ImportHighlights {
 					return;
 				}
 			}
-			new ObsidianNotice("Failed to update highlights");
+			new ObsidianNotice(`Failed to update ${source.label}`);
 		}
 	}
 
 	// fetch recursively
-	private async pagingFetch({
-		accessToken,
-		userHighlights,
+	private async pagingFetch<T extends { url: string; title: string }>({
+		fetchPage,
+		items,
 		updatedAfter,
 		pageCursor,
 	}: {
-		accessToken: string;
-		userHighlights: UserHighlight[];
+		fetchPage: HighlightImportSource<T>["fetchPage"];
+		items: T[];
 		updatedAfter?: string;
 		pageCursor?: string;
 	}) {
-		const highlightAPI = new GlaspHighlightAPI({ accessToken });
-		const response = await highlightAPI.fetchHighlights({
-			pageCursor,
-			updatedAfter,
-		});
+		const response = await fetchPage({ pageCursor, updatedAfter });
 
 		if (!response.results.length) {
 			return;
 		}
 
 		if (response.results.length < 50) {
-			userHighlights.push(...response.results);
+			items.push(...response.results);
 			return;
 		}
 
@@ -109,10 +123,10 @@ export class ImportHighlights {
 			return;
 		}
 
-		userHighlights.push(...response.results);
+		items.push(...response.results);
 		await this.pagingFetch({
-			accessToken,
-			userHighlights,
+			fetchPage,
+			items,
 			updatedAfter,
 			pageCursor: response.nextPageCursor,
 		});
@@ -134,8 +148,8 @@ export class ImportHighlights {
 		);
 	}
 
-	private updateLastUpdate() {
-		this.storageData.lastUpdated = new Date().toISOString();
+	private updateLastUpdate(key: LastUpdatedKey) {
+		this.storageData[key] = new Date().toISOString();
 		this.obPlugin.saveData(this.storageData);
 	}
 }

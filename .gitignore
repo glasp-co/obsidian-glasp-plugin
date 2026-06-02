@@ -1,5 +1,27 @@
+# Dependencies
 node_modules
+
+# Build artifacts
 dist
-.vscode
-data.json
 main.js
+
+# Editor / tooling
+.vscode
+.claude/*
+
+# Runtime data (contains the Glasp access token)
+data.json
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
+npm-debug.log*
+
+# Test coverage
+coverage
+
+# Environment variables
+.env
+.env.*
