@@ -1,4 +1,5 @@
 import type { Highlight, UserHighlight } from "src/glasp-api/highlight/type";
+import { toYaml } from "./frontmatter";
 
 export const normalizeHighlight = (userHighlight: UserHighlight) => {
 	let content = "";
@@ -20,8 +21,9 @@ export const normalizeHighlight = (userHighlight: UserHighlight) => {
 	});
 
 	return {
-		url: userHighlight.url,
-		glasp_url: userHighlight.glasp_url,
+		url: toYaml(userHighlight.url),
+		glasp_url: toYaml(userHighlight.glasp_url),
+		thumbnail_url: toYaml(userHighlight.thumbnail_url),
 		tags: userHighlight.tags.map((tag) => tag.trim().replace(/\s+/g, "-")),
 		updated_at: new Date(userHighlight.updated_at).toISOString().slice(0, 10),
 		content,

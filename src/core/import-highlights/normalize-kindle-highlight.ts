@@ -2,6 +2,7 @@ import type {
 	KindleBook,
 	KindleHighlight,
 } from "src/glasp-api/kindle-highlight/type";
+import { toYaml } from "./frontmatter";
 
 export const normalizeKindleHighlight = (book: KindleBook) => {
 	let content = "";
@@ -21,9 +22,14 @@ export const normalizeKindleHighlight = (book: KindleBook) => {
 	}
 
 	return {
-		url: book.url,
-		glasp_url: book.glasp_url,
-		author: book.author,
+		// YAML-escaped so a value like the Amazon placeholder author
+		// "Your Kindle Notes For:" (trailing colon) cannot corrupt the
+		// frontmatter — which would make Obsidian fail to parse URL and break
+		// de-duplication, creating a duplicate note on every re-sync.
+		url: toYaml(book.url),
+		glasp_url: toYaml(book.glasp_url),
+		author: toYaml(book.author),
+		thumbnail_url: toYaml(book.thumbnail_url),
 		tags: book.tags.map((tag) => tag.trim().replace(/\s+/g, "-")),
 		updated_at: new Date(book.updated_at).toISOString().slice(0, 10),
 		content,

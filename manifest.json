@@ -1,9 +1,9 @@
 {
 	"id": "glasp",
 	"name": "Glasp",
-	"version": "0.2.0",
-	"minAppVersion": "1.7.7",
-	"description": "Import your Glasp web and Kindle highlights and notes into your vault.",
+	"version": "0.3.0",
+	"minAppVersion": "1.9.0",
+	"description": "Import your Glasp web and Kindle highlights, summaries and bookmarks into your vault.",
 	"author": "Glasp",
 	"authorUrl": "https://glasp.co",
 	"isDesktopOnly": false

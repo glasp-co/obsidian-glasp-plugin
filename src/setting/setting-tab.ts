@@ -1,7 +1,9 @@
 import { PluginSettingTab, Setting } from "obsidian";
 import {
+	BOOKMARK_TEMPLATE,
 	HIGHLIGHT_TEMPLATE,
 	KINDLE_HIGHLIGHT_TEMPLATE,
+	SUMMARY_TEMPLATE,
 } from "../constant/template";
 import type ObsidianGlaspPlugin from "../main";
 import {
@@ -32,13 +34,25 @@ export class SettingTab extends PluginSettingTab {
 			accessToken: storageData?.accessToken ?? "",
 			folder: storageData?.folder ?? "",
 			kindleFolder: storageData?.kindleFolder ?? "",
+			summaryFolder: storageData?.summaryFolder ?? "",
+			bookmarkFolder: storageData?.bookmarkFolder ?? "",
 			template: storageData?.template ?? "",
 			kindleTemplate: storageData?.kindleTemplate ?? "",
+			summaryTemplate: storageData?.summaryTemplate ?? "",
+			bookmarkTemplate: storageData?.bookmarkTemplate ?? "",
+			summaryIncludeContent: storageData?.summaryIncludeContent ?? false,
 			lastUpdated: storageData?.lastUpdated ?? "",
 			kindleLastUpdated: storageData?.kindleLastUpdated ?? "",
+			summaryLastUpdated: storageData?.summaryLastUpdated ?? "",
+			bookmarkLastUpdated: storageData?.bookmarkLastUpdated ?? "",
 			updateFrequency: storageData?.updateFrequency ?? "1440",
+			// Guard against a legacy array value from an earlier build.
+			basesCreated: Array.isArray(storageData?.basesCreated)
+				? {}
+				: (storageData?.basesCreated ?? {}),
 		};
-		this.obPlugin.saveData(this.value);
+		// Persisting is done (awaited) by the plugin's onload, not here, so this
+		// write cannot race the first import's cursor writes.
 	}
 
 	async display(): Promise<void> {
@@ -47,6 +61,9 @@ export class SettingTab extends PluginSettingTab {
 		this.displayAccessToken(containerEl);
 		this.displaySelectFiles(containerEl);
 		this.displaySelectKindleFiles(containerEl);
+		this.displaySelectSummaryFiles(containerEl);
+		this.displaySummaryIncludeContent(containerEl);
+		this.displaySelectBookmarkFiles(containerEl);
 		this.displaySelectRefreshTime(containerEl);
 		this.displayAdvancedSettings(containerEl);
 	}
@@ -55,6 +72,8 @@ export class SettingTab extends PluginSettingTab {
 		new Setting(containerEl).setName("Advanced").setHeading();
 		this.displayTemplate(containerEl);
 		this.displayKindleTemplate(containerEl);
+		this.displaySummaryTemplate(containerEl);
+		this.displayBookmarkTemplate(containerEl);
 	}
 
 	private displayAccessToken(containerEl: HTMLElement): void {
@@ -141,6 +160,63 @@ export class SettingTab extends PluginSettingTab {
 			});
 	}
 
+	private displaySelectSummaryFiles(containerEl: HTMLElement): void {
+		new Setting(containerEl)
+			.setName("Summaries output folder")
+			.setDesc(
+				"Folder where your Glasp summaries will be saved. Leave unset to skip summary import.",
+			)
+			.addDropdown((dropdown) => {
+				dropdown
+					.addOptions(this.getFolderOptions())
+					.setValue(this.value.summaryFolder)
+					.onChange(async (value) => {
+						this.value.summaryFolder = value;
+						await this.obPlugin.saveData(this.value);
+						this.display();
+					});
+			});
+	}
+
+	private displaySummaryIncludeContent(containerEl: HTMLElement): void {
+		new Setting(containerEl)
+			.setName("Include full page content in summaries")
+			.setDesc(
+				"Also embed the full article/PDF text in each summary note. Slower (one extra request per summary) and makes notes larger.",
+			)
+			.addToggle((toggle) => {
+				toggle
+					.setValue(this.value.summaryIncludeContent)
+					.onChange(async (value) => {
+						this.value.summaryIncludeContent = value;
+						if (value) {
+							// Reset the cursor so already-imported summaries are re-synced
+							// and their full content is back-filled on the next import.
+							this.value.summaryLastUpdated = "";
+						}
+						await this.obPlugin.saveData(this.value);
+					});
+			});
+	}
+
+	private displaySelectBookmarkFiles(containerEl: HTMLElement): void {
+		new Setting(containerEl)
+			.setName("Bookmarks output folder")
+			.setDesc(
+				"Folder where your Glasp bookmarks will be saved. Leave unset to skip bookmark import.",
+			)
+			.addDropdown((dropdown) => {
+				dropdown
+					.addOptions(this.getFolderOptions())
+					.setValue(this.value.bookmarkFolder)
+					.onChange(async (value) => {
+						this.value.bookmarkFolder = value;
+						await this.obPlugin.saveData(this.value);
+						this.display();
+					});
+			});
+	}
+
 	private displayTemplateSetting(
 		containerEl: HTMLElement,
 		{
@@ -181,7 +257,7 @@ export class SettingTab extends PluginSettingTab {
 		this.displayTemplateSetting(containerEl, {
 			name: "Web highlights template",
 			variables:
-				"{{url}}, {{glasp_url}}, {{tags}}, {{updated_at}}, {{content}}",
+				"{{url}}, {{glasp_url}}, {{thumbnail_url}}, {{tags}}, {{updated_at}}, {{content}}",
 			defaultTemplate: HIGHLIGHT_TEMPLATE,
 			value: this.value.template,
 			onChange: async (value) => {
@@ -195,11 +271,39 @@ export class SettingTab extends PluginSettingTab {
 		this.displayTemplateSetting(containerEl, {
 			name: "Kindle highlights template",
 			variables:
-				"{{url}}, {{glasp_url}}, {{author}}, {{tags}}, {{updated_at}}, {{content}}",
+				"{{url}}, {{glasp_url}}, {{author}}, {{thumbnail_url}}, {{tags}}, {{updated_at}}, {{content}}",
 			defaultTemplate: KINDLE_HIGHLIGHT_TEMPLATE,
 			value: this.value.kindleTemplate,
 			onChange: async (value) => {
 				this.value.kindleTemplate = value;
+				await this.obPlugin.saveData(this.value);
+			},
+		});
+	}
+
+	private displaySummaryTemplate(containerEl: HTMLElement): void {
+		this.displayTemplateSetting(containerEl, {
+			name: "Summaries template",
+			variables:
+				"{{url}}, {{title}}, {{domain}}, {{thumbnail_url}}, {{created_at}}, {{updated_at}}, {{summary}}",
+			defaultTemplate: SUMMARY_TEMPLATE,
+			value: this.value.summaryTemplate,
+			onChange: async (value) => {
+				this.value.summaryTemplate = value;
+				await this.obPlugin.saveData(this.value);
+			},
+		});
+	}
+
+	private displayBookmarkTemplate(containerEl: HTMLElement): void {
+		this.displayTemplateSetting(containerEl, {
+			name: "Bookmarks template",
+			variables:
+				"{{url}}, {{title}}, {{domain}}, {{category}}, {{description}}, {{thumbnail_url}}, {{created_at}}, {{updated_at}}, {{title_text}}, {{url_text}}",
+			defaultTemplate: BOOKMARK_TEMPLATE,
+			value: this.value.bookmarkTemplate,
+			onChange: async (value) => {
+				this.value.bookmarkTemplate = value;
 				await this.obPlugin.saveData(this.value);
 			},
 		});
