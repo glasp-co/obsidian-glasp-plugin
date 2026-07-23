@@ -1,7 +1,7 @@
 {
 	"name": "glasp-obsidian-plugin",
-	"version": "0.2.0",
-	"description": "Obsidian plugin to import your Glasp web and Kindle Highlights into your vault.",
+	"version": "0.3.0",
+	"description": "Obsidian plugin to import your Glasp web and Kindle highlights, summaries and bookmarks into your vault.",
 	"main": "main.js",
 	"scripts": {
 		"dev": "node esbuild.config.mjs",
