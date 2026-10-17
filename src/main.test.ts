@@ -57,12 +57,27 @@ const makePlugin = (stored: unknown, vault = new FakeVault(["Glasp"])) => {
 	return { plugin, vault };
 };
 
-// Obsidian runs in a window; the automatic sync's timer is not exercised here.
-vi.stubGlobal("window", { setInterval: () => 1, clearInterval: () => {} });
+// Obsidian runs in a window; its timers are recorded, not run.
+const timers: { cb: () => void; ms: number }[] = [];
+const intervals: number[] = [];
+vi.stubGlobal("window", {
+	setInterval: (_cb: () => void, ms: number) => {
+		intervals.push(ms);
+		return intervals.length;
+	},
+	clearInterval: () => {},
+	setTimeout: (cb: () => void, ms: number) => {
+		timers.push({ cb, ms });
+		return timers.length;
+	},
+	clearTimeout: () => {},
+});
 
 afterEach(() => {
 	vi.restoreAllMocks();
 	shownNotices.length = 0;
+	timers.length = 0;
+	intervals.length = 0;
 });
 
 describe("plugin lifecycle", () => {
@@ -81,13 +96,114 @@ describe("plugin lifecycle", () => {
 	});
 
 	test("an unreadable data.json is left alone and nothing is imported", async () => {
-		const { plugin } = makePlugin(undefined);
+		const vault = new FakeVault(["Glasp"]);
+		vault.seed(".obsidian/plugins/glasp/data.json", "<<<<<<< a sync conflict");
+		const { plugin } = makePlugin(undefined, vault);
 		const get = vi.spyOn(GlaspAPIClient.prototype, "get");
 		await plugin.onload();
 		await plugin.importHighlights();
 		expect(plugin.saves).toEqual([]);
 		expect(get).not.toHaveBeenCalled();
 		expect(shownNotices.join("\n")).toMatch(/could not be read/);
+	});
+
+	test("a data.json that is not there yet counts as new even when Obsidian calls it unreadable", async () => {
+		// Obsidian for iOS before 1.13 does that when the device's language is
+		// not English.
+		const { plugin } = makePlugin(undefined);
+		await plugin.onload();
+		expect(shownNotices.join("\n")).not.toMatch(/could not be read/);
+		expect(plugin.saves).toEqual([]);
+	});
+
+	test("a data.json that is not there yet is not written at load", async () => {
+		// On a device whose copy has not arrived from a sync service yet, the
+		// defaults would otherwise replace every device's settings.
+		const { plugin } = makePlugin(null);
+		await plugin.onload();
+		expect(plugin.saves).toEqual([]);
+		expect(plugin.store.get().accessToken).toBe("");
+	});
+
+	test("loaded into a running Obsidian, the first import waits a few minutes", async () => {
+		const { plugin } = makePlugin(v040Data);
+		const get = vi
+			.spyOn(GlaspAPIClient.prototype, "get")
+			.mockResolvedValue({ results: [], nextPageCursor: null } as never);
+		await plugin.onload();
+		expect(get).not.toHaveBeenCalled();
+		const first = timers.find((t) => t.ms >= 60 * 1000);
+		if (!first) throw new Error("no delayed first import");
+		first.cb();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(get).toHaveBeenCalled();
+	});
+
+	test("started with Obsidian, the first import runs once the layout is ready", async () => {
+		const { plugin } = makePlugin(v040Data);
+		const workspace = (
+			plugin.app as unknown as { workspace: Record<string, unknown> }
+		).workspace;
+		let ready!: () => void;
+		workspace.layoutReady = false;
+		workspace.onLayoutReady = (cb: () => void) => {
+			ready = cb;
+		};
+		const get = vi
+			.spyOn(GlaspAPIClient.prototype, "get")
+			.mockResolvedValue({ results: [], nextPageCursor: null } as never);
+		await plugin.onload();
+		expect(timers).toEqual([]);
+		workspace.layoutReady = true;
+		ready();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(get).toHaveBeenCalled();
+	});
+
+	test("a Create missing notes asked for before the token is removed is dropped", async () => {
+		const { plugin } = makePlugin(v040Data);
+		await plugin.onload();
+		let release!: () => void;
+		vi.spyOn(GlaspAPIClient.prototype, "get")
+			.mockImplementationOnce(async () => {
+				await new Promise<void>((resolve) => {
+					release = resolve;
+				});
+				return { results: [], nextPageCursor: null } as never;
+			})
+			.mockResolvedValue({ results: [], nextPageCursor: null } as never);
+		const running = plugin.importHighlights();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		void plugin.createMissingNotes(); // queued behind the running sync
+		await plugin.updateSettings({ accessToken: "" });
+		release();
+		await running;
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		await plugin.updateSettings({ accessToken: "t" });
+		shownNotices.length = 0;
+		await plugin.createMissingNotes();
+		expect(shownNotices.join("\n")).not.toMatch(/already running/);
+	});
+
+	test("an update frequency changed on another device takes effect", async () => {
+		const { plugin } = makePlugin(v040Data);
+		await plugin.onload();
+		expect(intervals.at(-1)).toBe(1440 * 60 * 1000);
+		plugin.stored = { ...v040Data, updateFrequency: "60" };
+		await plugin.onExternalSettingsChange();
+		expect(intervals.at(-1)).toBe(60 * 60 * 1000);
+	});
+
+	test("a data.json written by a device on 0.3.0 keeps this device's Create Bases views", async () => {
+		const { plugin } = makePlugin({ ...v040Data, createBasesViews: false });
+		await plugin.onload();
+		const { createBasesViews: _c, ...from030 } = v040Data;
+		plugin.stored = { ...from030, folder: "Elsewhere" };
+		await plugin.onExternalSettingsChange();
+		expect(plugin.store.get()).toMatchObject({
+			folder: "Elsewhere",
+			createBasesViews: false,
+		});
 	});
 
 	test("an unreadable external change keeps the settings", async () => {
@@ -392,6 +508,26 @@ describe("plugin lifecycle", () => {
 			]);
 		},
 	);
+
+	test("turning on full page content forgets the summaries remembered as written", async () => {
+		const { plugin } = makePlugin({
+			...v040Data,
+			writtenAhead: {
+				summaryLastUpdated: { "https://s": "2026-10-01T00:00:00.000Z" },
+				lastUpdated: { "https://w": "2026-10-01T00:00:00.000Z" },
+			},
+		});
+		await plugin.onload();
+		await plugin.setSummaryIncludeContent(true);
+		expect(plugin.store.get()).toMatchObject({
+			summaryIncludeContent: true,
+			summaryLastUpdated: "",
+			writtenAhead: {
+				lastUpdated: { "https://w": "2026-10-01T00:00:00.000Z" },
+			},
+		});
+		expect(plugin.store.get().writtenAhead?.summaryLastUpdated).toBeUndefined();
+	});
 
 	test("an unknown update frequency falls back to daily", async () => {
 		const { plugin } = makePlugin({ ...v040Data, updateFrequency: "5" });

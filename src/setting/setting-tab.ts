@@ -227,7 +227,7 @@ export class SettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("Include full page content in summaries")
 			.setDesc(
-				"Also embed the full article/PDF text in each summary note. Slower (one extra request per summary) and makes notes larger. With a very large library, Glasp's limit on these requests means the full text of every summary can take more than a day to arrive.",
+				"Also embed the full article/PDF text in each summary note. Slower (one extra request per summary) and makes notes larger. Turning it on fetches every summary again. With a very large library, Glasp's limit on these requests means the full text of every summary can take more than a day to arrive.",
 			)
 			.addToggle((toggle) => {
 				toggle
