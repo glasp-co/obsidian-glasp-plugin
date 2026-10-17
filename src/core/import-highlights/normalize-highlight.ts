@@ -1,5 +1,7 @@
 import type { Highlight, UserHighlight } from "src/glasp-api/highlight/type";
 import { toYaml } from "./frontmatter";
+import { highlightStyleOf, normalizeTags } from "./highlight-fields";
+import { toYamlFlowTags } from "./yaml-tags";
 
 export const normalizeHighlight = (userHighlight: UserHighlight) => {
 	let content = "";
@@ -20,13 +22,30 @@ export const normalizeHighlight = (userHighlight: UserHighlight) => {
 		content += `${text}\n\n`;
 	});
 
+	const tags = normalizeTags(userHighlight.tags);
 	return {
 		url: toYaml(userHighlight.url),
 		glasp_url: toYaml(userHighlight.glasp_url),
 		thumbnail_url: toYaml(userHighlight.thumbnail_url),
-		tags: userHighlight.tags.map((tag) => tag.trim().replace(/\s+/g, "-")),
+		tags,
+		tags_yaml: toYamlFlowTags(tags),
 		updated_at: new Date(userHighlight.updated_at).toISOString().slice(0, 10),
 		content,
+		highlights: userHighlight.highlights.map((highlight) => ({
+			text: highlight.text,
+			highlight: highlight.text,
+			note: highlight.note ?? "",
+			color: highlight.color,
+			highlightStyle: highlightStyleOf(highlight.color),
+			highlighted_at: highlight.highlighted_at,
+			// The API sends a video position as `location` with location_type
+			// "time_offset".
+			yt_playback_position:
+				highlight.yt_playback_position ??
+				(highlight.location_type === "time_offset"
+					? (highlight.location ?? null)
+					: null),
+		})),
 	};
 };
 

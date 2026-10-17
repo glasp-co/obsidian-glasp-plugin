@@ -1,3 +1,5 @@
+import type { SyncReport } from "src/core/import-highlights/sync-report";
+
 export type StorageData = {
 	accessToken: string;
 	folder: string;
@@ -29,6 +31,13 @@ export type StorageData = {
 	 * rewrite a view when its source folder setting later changes.
 	 */
 	basesCreated?: Record<string, string>;
+	/**
+	 * "Create Bases views". Off = no `Glasp Bases` folder and no `.base` file
+	 * is created or rewritten. Missing (every 0.3.0 vault) means on.
+	 */
+	createBasesViews: boolean;
+	/** What failed in the last sync; never read to decide what to import. */
+	lastSyncReport?: SyncReport;
 };
 
 /**
