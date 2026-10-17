@@ -62,6 +62,10 @@ export class Plugin {
 		this.intervals.push(id);
 		return id;
 	}
+	cleanups: (() => void)[] = [];
+	register(cb: () => void): void {
+		this.cleanups.push(cb);
+	}
 }
 
 export class PluginSettingTab {
@@ -77,3 +81,9 @@ export class PluginSettingTab {
 export class Setting {}
 
 export const addIcon = (): void => {};
+
+export const normalizePath = (path: string): string =>
+	path
+		.replace(/\\/g, "/")
+		.replace(/\/{2,}/g, "/")
+		.replace(/^\/|\/$/g, "");
