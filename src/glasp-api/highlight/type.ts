@@ -30,5 +30,8 @@ export type Highlight = {
 	created_at: string; // ISO date string
 	updated_at: string; // ISO date string
 	url: string;
-	yt_playback_position: number | null; // YouTube timestamp in seconds
+	yt_playback_position?: number | null; // YouTube timestamp in seconds
+	/** Seconds into a video when `location_type` is "time_offset". */
+	location?: number | null;
+	location_type?: string | null;
 };

@@ -5,54 +5,95 @@ import {
 	KINDLE_HIGHLIGHT_TEMPLATE,
 	SUMMARY_TEMPLATE,
 } from "../constant/template";
+import type {
+	FailureStage,
+	SyncFailure,
+} from "../core/import-highlights/sync-report";
 import type ObsidianGlaspPlugin from "../main";
-import {
-	type ObsidianApp,
-	ObsidianNotice,
-	type ObsidianPlugin,
-} from "../obsidian-api";
+import { type ObsidianApp, ObsidianNotice } from "../obsidian-api";
 import type { StorageData, UpdateFrequency } from "../types/storage";
 
 type Constructor = {
 	obApp: ObsidianApp;
-	obPlugin: ObsidianPlugin;
 	glaspPlugin: ObsidianGlaspPlugin;
-	storageData: Partial<StorageData>;
 };
+
+/** Plain words for each stage, as shown in Last sync errors. */
+const STAGE_LABEL: Record<FailureStage, string> = {
+	hydrate: "downloading the full page content",
+	normalize: "reading the item from Glasp",
+	render: "applying the template",
+	create: "creating the note",
+	update: "updating the note",
+	folder: "the output folder",
+	fetch: "fetching from Glasp",
+	cursor: "saving the sync position",
+	unexpected: "an unexpected error",
+};
+
+/** At most this many items are listed under one problem. */
+const ITEMS_PER_PROBLEM = 20;
+
+type TextKey =
+	| "accessToken"
+	| "template"
+	| "kindleTemplate"
+	| "summaryTemplate"
+	| "bookmarkTemplate";
 
 export class SettingTab extends PluginSettingTab {
 	private obApp: ObsidianApp;
-	private obPlugin: ObsidianPlugin;
-	value: StorageData;
+	private glaspPlugin: ObsidianGlaspPlugin;
+	/**
+	 * Text typed but not saved yet. Text fields save when they lose focus (and
+	 * when the tab closes), not on every keystroke, so a save cannot make
+	 * Obsidian redraw the tab while the user is typing.
+	 */
+	private pendingText: Partial<Pick<StorageData, TextKey>> = {};
+	/** Saves of typed text, one after another: a click waits for the save its field's blur started. */
+	private flushing: Promise<void> = Promise.resolve();
 
-	constructor({ obApp, obPlugin, glaspPlugin, storageData }: Constructor) {
+	constructor({ obApp, glaspPlugin }: Constructor) {
 		super(glaspPlugin.app, glaspPlugin);
-
-		this.obPlugin = obPlugin;
 		this.obApp = obApp;
-		this.value = {
-			accessToken: storageData?.accessToken ?? "",
-			folder: storageData?.folder ?? "",
-			kindleFolder: storageData?.kindleFolder ?? "",
-			summaryFolder: storageData?.summaryFolder ?? "",
-			bookmarkFolder: storageData?.bookmarkFolder ?? "",
-			template: storageData?.template ?? "",
-			kindleTemplate: storageData?.kindleTemplate ?? "",
-			summaryTemplate: storageData?.summaryTemplate ?? "",
-			bookmarkTemplate: storageData?.bookmarkTemplate ?? "",
-			summaryIncludeContent: storageData?.summaryIncludeContent ?? false,
-			lastUpdated: storageData?.lastUpdated ?? "",
-			kindleLastUpdated: storageData?.kindleLastUpdated ?? "",
-			summaryLastUpdated: storageData?.summaryLastUpdated ?? "",
-			bookmarkLastUpdated: storageData?.bookmarkLastUpdated ?? "",
-			updateFrequency: storageData?.updateFrequency ?? "1440",
-			// Guard against a legacy array value from an earlier build.
-			basesCreated: Array.isArray(storageData?.basesCreated)
-				? {}
-				: (storageData?.basesCreated ?? {}),
-		};
-		// Persisting is done (awaited) by the plugin's onload, not here, so this
-		// write cannot race the first import's cursor writes.
+		this.glaspPlugin = glaspPlugin;
+	}
+
+	/**
+	 * The plugin's current saved state. Read fresh every time, and every change
+	 * saves only the fields it changes, so this tab can never write back the
+	 * sync cursors it saw when it was opened.
+	 */
+	private get value(): Readonly<StorageData> {
+		return this.glaspPlugin.store.get();
+	}
+
+	private save(patch: Partial<StorageData>): Promise<void> {
+		return this.glaspPlugin.updateSettings(patch);
+	}
+
+	private flushText(): Promise<void> {
+		const next = () => this.flushNow();
+		this.flushing = this.flushing.then(next, next);
+		return this.flushing;
+	}
+
+	private async flushNow(): Promise<void> {
+		const pending = this.pendingText;
+		this.pendingText = {};
+		const changed: Partial<StorageData> = {};
+		for (const [key, value] of Object.entries(pending) as [TextKey, string][]) {
+			if (this.value[key] !== value) {
+				changed[key] = value;
+			}
+		}
+		if (Object.keys(changed).length) {
+			await this.save(changed);
+		}
+	}
+
+	hide(): void {
+		void this.flushText();
 	}
 
 	async display(): Promise<void> {
@@ -64,8 +105,11 @@ export class SettingTab extends PluginSettingTab {
 		this.displaySelectSummaryFiles(containerEl);
 		this.displaySummaryIncludeContent(containerEl);
 		this.displaySelectBookmarkFiles(containerEl);
+		this.displayCreateBasesViews(containerEl);
 		this.displaySelectRefreshTime(containerEl);
+		this.displayCreateMissingNotes(containerEl);
 		this.displayAdvancedSettings(containerEl);
+		this.displayLastSyncErrors(containerEl);
 	}
 
 	private displayAdvancedSettings(containerEl: HTMLElement): void {
@@ -110,111 +154,225 @@ export class SettingTab extends PluginSettingTab {
 			.addText((text) => {
 				text
 					.setPlaceholder("Access token")
-					.setValue(this.value.accessToken)
-					.onChange(async (value) => {
-						this.value.accessToken = value;
-						await this.obPlugin.saveData(this.value);
+					.setValue(this.pendingText.accessToken ?? this.value.accessToken)
+					.onChange((value) => {
+						this.pendingText.accessToken = value;
 					});
+				text.inputEl.addEventListener("change", () => {
+					void this.flushText();
+				});
 			});
 	}
 
-	private getFolderOptions(): Record<string, string> {
+	/** Existing folders, plus the saved one marked "(missing)" if it is gone. */
+	private getFolderOptions(current: string): Record<string, string> {
 		const options: Record<string, string> = { "": "— Not set —" };
 		for (const folder of this.obApp.getAllFolders()) {
 			options[folder.path] = folder.path;
 		}
+		if (current && !(current in options)) {
+			options[current] = `${current} (missing)`;
+		}
 		return options;
 	}
 
-	private displaySelectFiles(containerEl: HTMLElement): void {
+	private displayFolderSetting(
+		containerEl: HTMLElement,
+		name: string,
+		desc: string,
+		key: "folder" | "kindleFolder" | "summaryFolder" | "bookmarkFolder",
+	): void {
 		new Setting(containerEl)
-			.setName("Web highlights output folder")
-			.setDesc("Folder where your Glasp web highlights will be saved")
+			.setName(name)
+			.setDesc(desc)
 			.addDropdown((dropdown) => {
 				dropdown
-					.addOptions(this.getFolderOptions())
-					.setValue(this.value.folder)
+					.addOptions(this.getFolderOptions(this.value[key]))
+					.setValue(this.value[key])
 					.onChange(async (value) => {
-						this.value.folder = value;
-						await this.obPlugin.saveData(this.value);
+						await this.save({ [key]: value } as Partial<StorageData>);
 						this.display();
 					});
 			});
+	}
+
+	private displaySelectFiles(containerEl: HTMLElement): void {
+		this.displayFolderSetting(
+			containerEl,
+			"Web highlights output folder",
+			"Folder where your Glasp web highlights will be saved",
+			"folder",
+		);
 	}
 
 	private displaySelectKindleFiles(containerEl: HTMLElement): void {
-		new Setting(containerEl)
-			.setName("Kindle highlights output folder")
-			.setDesc(
-				"Folder where your Kindle highlights will be saved. Leave unset to skip Kindle import.",
-			)
-			.addDropdown((dropdown) => {
-				dropdown
-					.addOptions(this.getFolderOptions())
-					.setValue(this.value.kindleFolder)
-					.onChange(async (value) => {
-						this.value.kindleFolder = value;
-						await this.obPlugin.saveData(this.value);
-						this.display();
-					});
-			});
+		this.displayFolderSetting(
+			containerEl,
+			"Kindle highlights output folder",
+			"Folder where your Kindle highlights will be saved. Leave unset to skip Kindle import.",
+			"kindleFolder",
+		);
 	}
 
 	private displaySelectSummaryFiles(containerEl: HTMLElement): void {
-		new Setting(containerEl)
-			.setName("Summaries output folder")
-			.setDesc(
-				"Folder where your Glasp summaries will be saved. Leave unset to skip summary import.",
-			)
-			.addDropdown((dropdown) => {
-				dropdown
-					.addOptions(this.getFolderOptions())
-					.setValue(this.value.summaryFolder)
-					.onChange(async (value) => {
-						this.value.summaryFolder = value;
-						await this.obPlugin.saveData(this.value);
-						this.display();
-					});
-			});
+		this.displayFolderSetting(
+			containerEl,
+			"Summaries output folder",
+			"Folder where your Glasp summaries will be saved. Leave unset to skip summary import.",
+			"summaryFolder",
+		);
 	}
 
 	private displaySummaryIncludeContent(containerEl: HTMLElement): void {
 		new Setting(containerEl)
 			.setName("Include full page content in summaries")
 			.setDesc(
-				"Also embed the full article/PDF text in each summary note. Slower (one extra request per summary) and makes notes larger.",
+				"Also embed the full article/PDF text in each summary note. Slower (one extra request per summary) and makes notes larger. With a very large library, Glasp's limit on these requests means the full text of every summary can take more than a day to arrive.",
 			)
 			.addToggle((toggle) => {
 				toggle
 					.setValue(this.value.summaryIncludeContent)
 					.onChange(async (value) => {
-						this.value.summaryIncludeContent = value;
-						if (value) {
-							// Reset the cursor so already-imported summaries are re-synced
-							// and their full content is back-filled on the next import.
-							this.value.summaryLastUpdated = "";
-						}
-						await this.obPlugin.saveData(this.value);
+						// Turning it on also re-syncs the summaries already imported, so
+						// their full content is back-filled on the next import.
+						await this.glaspPlugin.setSummaryIncludeContent(value);
 					});
 			});
 	}
 
 	private displaySelectBookmarkFiles(containerEl: HTMLElement): void {
+		this.displayFolderSetting(
+			containerEl,
+			"Bookmarks output folder",
+			"Folder where your Glasp bookmarks will be saved. Leave unset to skip bookmark import.",
+			"bookmarkFolder",
+		);
+	}
+
+	private displayCreateBasesViews(containerEl: HTMLElement): void {
 		new Setting(containerEl)
-			.setName("Bookmarks output folder")
+			.setName("Create Bases views")
 			.setDesc(
-				"Folder where your Glasp bookmarks will be saved. Leave unset to skip bookmark import.",
+				"Create a database view (.base file) for each source in a “Glasp Bases” folder. When off, the plugin creates no such folder or file and leaves existing ones alone.",
 			)
-			.addDropdown((dropdown) => {
-				dropdown
-					.addOptions(this.getFolderOptions())
-					.setValue(this.value.bookmarkFolder)
-					.onChange(async (value) => {
-						this.value.bookmarkFolder = value;
-						await this.obPlugin.saveData(this.value);
-						this.display();
-					});
+			.addToggle((toggle) => {
+				toggle.setValue(this.value.createBasesViews).onChange(async (value) => {
+					await this.glaspPlugin.setCreateBasesViews(value);
+				});
 			});
+	}
+
+	private displayCreateMissingNotes(containerEl: HTMLElement): void {
+		new Setting(containerEl)
+			.setName("Create missing notes")
+			.setDesc(
+				"Fetch all your items once and create a note for every item that has no note anywhere in your vault, for example items an earlier version could not save. Existing notes are not changed, wherever they are. Notes you deleted are created again.",
+			)
+			.addButton((button) => {
+				button.setButtonText("Create missing notes").onClick(async () => {
+					// A token pasted a moment ago is saved first.
+					await this.flushText();
+					await this.glaspPlugin.createMissingNotes();
+					this.display();
+				});
+			});
+	}
+
+	private displayLastSyncErrors(containerEl: HTMLElement): void {
+		new Setting(containerEl).setName("Last sync errors").setHeading();
+		const report = this.glaspPlugin.lastSyncReport;
+		if (!report) {
+			containerEl.createEl("p", {
+				text: "No sync has finished since this version was installed.",
+				cls: "setting-item-description",
+			});
+			return;
+		}
+
+		const when = new Date(report.finishedAt).toLocaleString();
+		const summary = containerEl.createEl("p", {
+			cls: "setting-item-description",
+		});
+		summary.createSpan({
+			text:
+				report.totalFailures === 0
+					? `Last sync finished ${when} with no errors.`
+					: `Last sync finished ${when} with ${report.totalFailures} problem(s). Later syncs try failed items again (for Create missing notes, run it again); a source whose folder is missing is skipped until the folder exists again.`,
+		});
+		if (!this.glaspPlugin.lastSyncReportSaved) {
+			summary.createEl("br");
+			summary.createSpan({
+				text: "This list could not be saved, so it is kept only until Obsidian restarts.",
+			});
+		}
+
+		const counts = containerEl.createEl("ul", {
+			cls: "setting-item-description",
+		});
+		for (const source of report.sources) {
+			counts.createEl("li", {
+				text: `${source.source}: ${source.fetched} fetched, ${source.created} created, ${source.updated} updated, ${source.unchanged} unchanged, ${source.failed} failed`,
+			});
+		}
+
+		if (!report.failures.length) {
+			return;
+		}
+		if (report.truncated) {
+			containerEl.createEl("p", {
+				text: `The list below holds ${report.failures.length} of the ${report.totalFailures} problems (some text may be shortened).`,
+				cls: "setting-item-description",
+			});
+		}
+
+		// One entry per distinct problem, with the items it affected.
+		const groups = new Map<string, SyncFailure[]>();
+		for (const failure of report.failures) {
+			const key = `${failure.source}\n${failure.stage}\n${failure.message}`;
+			const group = groups.get(key);
+			if (group) {
+				group.push(failure);
+			} else {
+				groups.set(key, [failure]);
+			}
+		}
+		const details = containerEl.createEl("details");
+		details.createEl("summary", {
+			text: `Show the problems (${groups.size} kind${groups.size === 1 ? "" : "s"})`,
+		});
+		const list = details.createEl("ul");
+		for (const rows of groups.values()) {
+			const first = rows[0];
+			const entry = list.createEl("li");
+			entry.createEl("strong", {
+				text: `${first.source}, ${STAGE_LABEL[first.stage] ?? first.stage}`,
+			});
+			entry.createSpan({
+				text: ` — ${first.message}${rows.length > 1 ? ` (${rows.length} items)` : ""}`,
+			});
+			const withItems = rows.filter((row) => row.title || row.url);
+			if (!withItems.length) {
+				continue;
+			}
+			const items = entry.createEl("ul");
+			for (const row of withItems.slice(0, ITEMS_PER_PROBLEM)) {
+				const item = items.createEl("li");
+				item.createSpan({ text: row.title || row.url || "" });
+				if (row.title && row.url) {
+					item.createEl("br");
+					item.createEl("small", { text: row.url });
+				}
+				if (row.path) {
+					item.createEl("br");
+					item.createEl("small", { text: `File: ${row.path}` });
+				}
+			}
+			if (withItems.length > ITEMS_PER_PROBLEM) {
+				items.createEl("li", {
+					text: `… and ${withItems.length - ITEMS_PER_PROBLEM} more`,
+				});
+			}
+		}
 	}
 
 	private displayTemplateSetting(
@@ -223,14 +381,12 @@ export class SettingTab extends PluginSettingTab {
 			name,
 			variables,
 			defaultTemplate,
-			value,
-			onChange,
+			key,
 		}: {
 			name: string;
 			variables: string;
 			defaultTemplate: string;
-			value: string;
-			onChange: (value: string) => Promise<void>;
+			key: Exclude<TextKey, "accessToken">;
 		},
 	): void {
 		const description = createFragment((fragment) => {
@@ -247,9 +403,14 @@ export class SettingTab extends PluginSettingTab {
 			.addTextArea((textarea) => {
 				textarea
 					.setPlaceholder(defaultTemplate)
-					.setValue(value)
-					.onChange(onChange);
+					.setValue(this.pendingText[key] ?? this.value[key])
+					.onChange((value) => {
+						this.pendingText[key] = value;
+					});
 				textarea.inputEl.rows = 10;
+				textarea.inputEl.addEventListener("change", () => {
+					void this.flushText();
+				});
 			});
 	}
 
@@ -257,13 +418,9 @@ export class SettingTab extends PluginSettingTab {
 		this.displayTemplateSetting(containerEl, {
 			name: "Web highlights template",
 			variables:
-				"{{url}}, {{glasp_url}}, {{thumbnail_url}}, {{tags}}, {{updated_at}}, {{content}}",
+				"{{url}}, {{glasp_url}}, {{thumbnail_url}}, {{tags}}, {{tags_yaml}}, {{updated_at}}, {{content}}, and {{#each highlights}} … {{/each}} with {{text}} (or {{highlight}}), {{note}}, {{color}}, {{highlightStyle}}, {{highlighted_at}}, {{yt_playback_position}}. Helper: (eq a b)",
 			defaultTemplate: HIGHLIGHT_TEMPLATE,
-			value: this.value.template,
-			onChange: async (value) => {
-				this.value.template = value;
-				await this.obPlugin.saveData(this.value);
-			},
+			key: "template",
 		});
 	}
 
@@ -271,13 +428,9 @@ export class SettingTab extends PluginSettingTab {
 		this.displayTemplateSetting(containerEl, {
 			name: "Kindle highlights template",
 			variables:
-				"{{url}}, {{glasp_url}}, {{author}}, {{thumbnail_url}}, {{tags}}, {{updated_at}}, {{content}}",
+				"{{url}}, {{glasp_url}}, {{author}}, {{thumbnail_url}}, {{tags}}, {{tags_yaml}}, {{updated_at}}, {{content}}, and {{#each highlights}} … {{/each}} with {{text}} (or {{highlight}}), {{note}}, {{color}}, {{highlightStyle}}, {{highlighted_at}}, {{location}}, {{location_type}}. Helper: (eq a b)",
 			defaultTemplate: KINDLE_HIGHLIGHT_TEMPLATE,
-			value: this.value.kindleTemplate,
-			onChange: async (value) => {
-				this.value.kindleTemplate = value;
-				await this.obPlugin.saveData(this.value);
-			},
+			key: "kindleTemplate",
 		});
 	}
 
@@ -285,13 +438,9 @@ export class SettingTab extends PluginSettingTab {
 		this.displayTemplateSetting(containerEl, {
 			name: "Summaries template",
 			variables:
-				"{{url}}, {{title}}, {{domain}}, {{thumbnail_url}}, {{created_at}}, {{updated_at}}, {{summary}}",
+				"{{url}}, {{title}}, {{domain}}, {{thumbnail_url}}, {{created_at}}, {{updated_at}}, {{summary}}, {{content}}",
 			defaultTemplate: SUMMARY_TEMPLATE,
-			value: this.value.summaryTemplate,
-			onChange: async (value) => {
-				this.value.summaryTemplate = value;
-				await this.obPlugin.saveData(this.value);
-			},
+			key: "summaryTemplate",
 		});
 	}
 
@@ -301,11 +450,7 @@ export class SettingTab extends PluginSettingTab {
 			variables:
 				"{{url}}, {{title}}, {{domain}}, {{category}}, {{description}}, {{thumbnail_url}}, {{created_at}}, {{updated_at}}, {{title_text}}, {{url_text}}",
 			defaultTemplate: BOOKMARK_TEMPLATE,
-			value: this.value.bookmarkTemplate,
-			onChange: async (value) => {
-				this.value.bookmarkTemplate = value;
-				await this.obPlugin.saveData(this.value);
-			},
+			key: "bookmarkTemplate",
 		});
 	}
 
@@ -324,9 +469,7 @@ export class SettingTab extends PluginSettingTab {
 					.addOptions(OPTIONS)
 					.setValue(this.value.updateFrequency)
 					.onChange(async (value) => {
-						this.value.updateFrequency = value as UpdateFrequency;
-						await this.obPlugin.saveData(this.value);
-						this.obApp.triggerEvent("glasp-plugin:update-frequency-changed");
+						await this.glaspPlugin.setUpdateFrequency(value as UpdateFrequency);
 						this.display();
 					});
 			});
