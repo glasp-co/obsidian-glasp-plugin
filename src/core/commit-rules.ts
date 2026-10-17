@@ -18,21 +18,33 @@ export const cursorCommitPatch = (
 	read: CursorRead,
 	generationNow: number,
 	written: Record<string, string>,
+	shown: Record<string, string>,
 ): Partial<StorageData> | null => {
 	if (generationNow !== read.generation || state[key] !== read.value) {
 		return null;
 	}
-	const writtenAhead = { ...(state.writtenAhead ?? {}) };
-	if (Object.keys(written).length) {
-		writtenAhead[key] = written;
-	} else {
-		delete writtenAhead[key];
-	}
 	return {
 		[key]: value,
-		// Left out of data.json when there is nothing to remember.
-		writtenAhead: Object.keys(writtenAhead).length ? writtenAhead : undefined,
+		writtenAhead: withEntries(state.writtenAhead, key, written),
+		shownAhead: withEntries(state.shownAhead, key, shown),
 	} as Partial<StorageData>;
+};
+
+type AheadMap = NonNullable<StorageData["writtenAhead"]>;
+
+/** `map` with `key`'s entries replaced; left out of data.json when empty. */
+const withEntries = (
+	map: AheadMap | undefined,
+	key: LastUpdatedKey,
+	entries: Record<string, string>,
+): AheadMap | undefined => {
+	const next = { ...(map ?? {}) };
+	if (Object.keys(entries).length) {
+		next[key] = entries;
+	} else {
+		delete next[key];
+	}
+	return Object.keys(next).length ? next : undefined;
 };
 
 /**

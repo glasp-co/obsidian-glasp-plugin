@@ -90,20 +90,92 @@ const writtenAheadOf = (
 	return Object.fromEntries(kept.slice(0, MAX_WRITTEN_AHEAD));
 };
 
-/**
- * An item's version as remembered: its `updated_at` and a hash of what the
- * API sent, since a change does not always move `updated_at` (a Kindle book
- * can keep its update time when highlights are added).
- */
-const versionOf = (item: Item): string => {
-	const text = JSON.stringify(item);
+const fnv1a = (text: string): string => {
 	let hash = 0x811c9dc5;
 	for (let i = 0; i < text.length; i++) {
 		hash ^= text.charCodeAt(i);
 		hash = Math.imul(hash, 0x01000193);
 	}
-	return `${String(item.updated_at ?? "")}#${(hash >>> 0).toString(36)}`;
+	return (hash >>> 0).toString(36);
 };
+
+/**
+ * An item's version as remembered in `writtenAhead`: its `updated_at` and a
+ * hash of the item as the API sent it, since a change does not always move
+ * `updated_at` (a Kindle book can keep its update time when highlights are
+ * added). The same as 0.4.1's, so a device still on 0.4.1 that shares
+ * data.json keeps matching it.
+ */
+const versionOf = (item: Item): string =>
+	`${String(item.updated_at ?? "")}#${fnv1a(JSON.stringify(item))}`;
+
+/**
+ * A hash of what an item's note is made from (`shown`, the item normalized
+ * for the template). A value the note never shows can change from one answer
+ * to the next while nothing on the page does, and that alone must not
+ * overwrite an edited note.
+ */
+const shownHashFrom = (shown: unknown): string => {
+	let hashed = shown;
+	if (shown && typeof shown === "object") {
+		// Derived from `tags` by Obsidian's YAML parser, which an Obsidian
+		// update can change.
+		const { tags_yaml: _derived, ...rest } = shown as Record<string, unknown>;
+		hashed = rest;
+	}
+	return fnv1a(JSON.stringify(hashed) ?? "");
+};
+
+/** `shownHashFrom` the item as fetched; null when it cannot be normalized. */
+const shownHashOf = <T extends Item>(
+	item: T,
+	normalize: (item: T) => unknown,
+): string | null => {
+	try {
+		return shownHashFrom(normalize(item));
+	} catch (_e) {
+		return null;
+	}
+};
+
+/**
+ * A `shownAhead` entry: the `writtenAhead` version it was taken with, and the
+ * hash of what the note is made from.
+ */
+const shownEntry = (version: string, hash: string): string =>
+	`${version} ${hash}`;
+
+const splitShownEntry = (entry: string): [string, string] => {
+	const i = entry.lastIndexOf(" ");
+	return [entry.slice(0, i), entry.slice(i + 1)];
+};
+
+/**
+ * The `shownAhead` entries worth keeping: those taken with the version
+ * `ahead` remembers for their item (one taken with another, e.g. before a
+ * device on 0.4.1 wrote the item again, says nothing about its note).
+ */
+const shownAheadOf = (
+	before: Readonly<Record<string, string>>,
+	shown: ReadonlyMap<string, string>,
+	ahead: Readonly<Record<string, string>>,
+): Record<string, string> => {
+	const merged = new Map<string, string>(Object.entries(before));
+	for (const [url, entry] of shown) {
+		merged.set(url, entry);
+	}
+	const kept: Record<string, string> = {};
+	for (const [url, entry] of merged) {
+		if (ahead[url] !== undefined && splitShownEntry(entry)[0] === ahead[url]) {
+			kept[url] = entry;
+		}
+	}
+	return kept;
+};
+
+/** The `updated_at` part of a remembered version, as it was sent. */
+const versionUpdatedAt = (version: string): string =>
+	version.slice(0, version.lastIndexOf("#"));
 
 /** The `updated_at` part of a remembered version, in ms. */
 const versionTime = (version: string): number =>
@@ -186,6 +258,8 @@ export type CursorRead = {
 	generation: number;
 	/** Items written ahead of the cursor, URL → version (see `writtenAhead`). */
 	written: Readonly<Record<string, string>>;
+	/** For those, what their notes are made from (see `shownAhead`). */
+	shown: Readonly<Record<string, string>>;
 };
 
 /**
@@ -202,6 +276,7 @@ export type CursorStore = {
 		value: string,
 		read: CursorRead,
 		written: Record<string, string>,
+		shown: Record<string, string>,
 	) => Promise<boolean>;
 };
 
@@ -272,12 +347,15 @@ type Planned =
 	| {
 			kind: "update";
 			item: Item;
+			/** What the note is made from, remembered once it is written. */
+			hash: string | null;
 			file: TFile;
 			content: string;
 	  }
 	| {
 			kind: "create";
 			item: Item;
+			hash: string | null;
 			name: string;
 			title: string;
 			path: string;
@@ -419,8 +497,10 @@ export class ImportHighlights {
 		// The oldest `updated_at` among the items that failed (null when one of
 		// them has none we can read); +Infinity when none failed.
 		let firstFailedAt: number | null = Number.POSITIVE_INFINITY;
-		// Items written or found up to date in this run, URL → `updated_at`.
+		// Items written or found up to date in this run, URL → version, and
+		// URL → what their notes are made from.
 		const written = new Map<string, string>();
+		const shown = new Map<string, string>();
 		if (items.length) {
 			try {
 				firstFailedAt = await this.writeItems(
@@ -430,7 +510,9 @@ export class ImportHighlights {
 					backfill,
 					!sharedWithUnmarked,
 					backfill ? {} : cursor.written,
+					backfill ? {} : cursor.shown,
 					written,
+					shown,
 				);
 			} catch (e) {
 				sourceFailure("unexpected", describeError(e));
@@ -477,12 +559,23 @@ export class ImportHighlights {
 		// finds unchanged are left alone, so a note edited, moved or deleted
 		// since is not rewritten, copied or brought back.
 		const ahead = writtenAheadOf(cursor.written, written, Date.parse(next));
-		if (next === cursor.value && sameEntries(ahead, cursor.written)) {
+		const shownAhead = shownAheadOf(cursor.shown, shown, ahead);
+		if (
+			next === cursor.value &&
+			sameEntries(ahead, cursor.written) &&
+			sameEntries(shownAhead, cursor.shown)
+		) {
 			// Nothing to move past and nothing new to remember: no write.
 			return result;
 		}
 		try {
-			await this.cursors.commit(source.lastUpdatedKey, next, cursor, ahead);
+			await this.cursors.commit(
+				source.lastUpdatedKey,
+				next,
+				cursor,
+				ahead,
+				shownAhead,
+			);
 		} catch (e) {
 			if (!this.isCancelled()) {
 				result.failures.push({
@@ -569,16 +662,25 @@ export class ImportHighlights {
 		backfill: boolean,
 		looseOwnFolder: boolean,
 		alreadyWritten: Readonly<Record<string, string>>,
+		alreadyShown: Readonly<Record<string, string>>,
 		written: Map<string, string>,
+		shown: Map<string, string>,
 	): Promise<number | null> {
 		let firstFailedAt: number | null = Number.POSITIVE_INFINITY;
 		let contentSkipped = 0;
 		// An item that failed at any stage (e.g. a new summary written without
 		// its content) is not remembered, so the next sync tries it again.
 		const failedUrls = new Set<string>();
-		const wrote = (item: Item) => {
+		const remember = (item: Item, hash: string | null) => {
+			const version = versionOf(item);
+			written.set(item.url, version);
+			if (hash !== null) {
+				shown.set(item.url, shownEntry(version, hash));
+			}
+		};
+		const wrote = (item: Item, hash: string | null) => {
 			if (!failedUrls.has(item.url)) {
-				written.set(item.url, versionOf(item));
+				remember(item, hash);
 			}
 		};
 		const fail = (
@@ -639,11 +741,31 @@ export class ImportHighlights {
 		// Written by this device's last sync and unchanged since: left alone,
 		// whatever has happened to its note.
 		const fresh = candidates.filter((item) => {
-			const version = versionOf(item);
-			if (alreadyWritten[item.url] !== version) {
+			const remembered = alreadyWritten[item.url];
+			if (remembered === undefined) {
 				return true;
 			}
-			written.set(item.url, version);
+			const hash = shownHashOf(item, source.normalize);
+			if (remembered !== versionOf(item)) {
+				// Something in the item changed. Left alone only when its update
+				// time did not move and nothing its note shows changed, by
+				// the hash taken with the remembered version: a web or Kindle note
+				// shows only the day, and a note written but not remembered (the
+				// plugin unloaded right after) can show more than what was.
+				const entry = alreadyShown[item.url];
+				if (
+					entry === undefined ||
+					hash === null ||
+					versionUpdatedAt(remembered) !== String(item.updated_at ?? "")
+				) {
+					return true;
+				}
+				const [takenWith, shownHash] = splitShownEntry(entry);
+				if (takenWith !== remembered || shownHash !== hash) {
+					return true;
+				}
+			}
+			remember(item, hash);
 			return false;
 		});
 		result.unchanged += candidates.length - fresh.length;
@@ -712,9 +834,21 @@ export class ImportHighlights {
 					fail(item, "render", e);
 					continue;
 				}
+				// Hydrated items (a summary with its full body) are hashed as
+				// fetched, as they are when they come back.
+				const hash =
+					resolved === item
+						? shownHashFrom(data)
+						: shownHashOf(item, source.normalize);
 				const existing = index.get(item.url);
 				if (existing) {
-					planned.push({ kind: "update", item, file: existing, content });
+					planned.push({
+						kind: "update",
+						item,
+						hash,
+						file: existing,
+						content,
+					});
 					continue;
 				}
 				if (backfill) {
@@ -738,7 +872,15 @@ export class ImportHighlights {
 					);
 					const name = escapeFilename(title, NOTE_NAME_MAX_BYTES);
 					const path = reserver.reserve(source.folder, name);
-					planned.push({ kind: "create", item, name, title, path, content });
+					planned.push({
+						kind: "create",
+						item,
+						hash,
+						name,
+						title,
+						path,
+						content,
+					});
 				} catch (e) {
 					fail(item, "create", e);
 				}
@@ -762,7 +904,7 @@ export class ImportHighlights {
 							} else {
 								result.unchanged++;
 							}
-							wrote(plan.item);
+							wrote(plan.item, plan.hash);
 						} catch (e) {
 							fail(plan.item, "update", e, plan.file.path);
 						}
@@ -782,7 +924,7 @@ export class ImportHighlights {
 							created.set(plan.item.url, file);
 						}
 						result.created++;
-						wrote(plan.item);
+						wrote(plan.item, plan.hash);
 					} catch (e) {
 						const path = e instanceof CreateError ? e.path : plan.path;
 						fail(

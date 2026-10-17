@@ -15,9 +15,19 @@ export const HIGHLIGHT_STYLE: ReadonlyMap<string, string> = new Map([
 export const highlightStyleOf = (color: string | null | undefined): string =>
 	HIGHLIGHT_STYLE.get(color ?? "") ?? "";
 
-/** The tag list both highlight templates render, as in 0.3.0. */
-export const normalizeTags = (tags: string[] | null | undefined): string[] =>
-	(tags ?? []).map((tag) =>
+/**
+ * The tag list both highlight templates render, as in 0.3.0. A single tag
+ * given as a string is one tag, and any other value that is not a list none:
+ * either would otherwise fail the item on every sync and hold the sync
+ * position there.
+ */
+export const normalizeTags = (tags: unknown): string[] =>
+	(Array.isArray(tags)
+		? tags
+		: typeof tags === "string" && tags.trim()
+			? [tags]
+			: []
+	).map((tag) =>
 		String(tag ?? "")
 			.trim()
 			.replace(/\s+/g, "-"),

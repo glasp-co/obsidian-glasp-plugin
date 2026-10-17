@@ -217,7 +217,7 @@ A new note is named after the item's title, cleaned so every platform Obsidian r
 - The plugin has **read-only** access to your own content. It never sends your notes anywhere.
 - ⚠️ If you sync or share your vault, be aware that `data.json` contains your token — treat it like a password. Never paste the whole file into an issue or a chat; if you are asked for a value from it, copy only that line.
 - `data.json` also keeps the last sync's error list, which includes the titles and URLs of the items that failed, and, for each source, the URLs of the items most recently synced (at most 2,000 per source), so that the next sync leaves them alone when they have not changed.
-- If you sync the vault to other devices, update the plugin on all of them: a device on 0.3.0 does not know **Create Bases views**, and 0.4.1 keeps its own setting when such a device saves the file.
+- If you sync the vault to other devices, update the plugin on all of them: a device on 0.3.0 does not know **Create Bases views**, and the plugin keeps this device's setting when such a device saves the file.
 
 ## 🛠️ Development
 
