@@ -13,6 +13,7 @@ describe("cursorCommitPatch", () => {
 		value: "2026-09-23T00:00:00.000Z",
 		generation: 0,
 		written: {},
+		shown: {},
 	};
 
 	test("commits when nothing changed since the run read the cursor", () => {
@@ -23,6 +24,7 @@ describe("cursorCommitPatch", () => {
 				"2026-10-01T00:00:00.000Z",
 				read,
 				0,
+				{},
 				{},
 			),
 		).toEqual({
@@ -47,6 +49,7 @@ describe("cursorCommitPatch", () => {
 				read,
 				0,
 				ahead,
+				{},
 			),
 		).toEqual({
 			lastUpdated: "2026-10-01T00:00:00.000Z",
@@ -62,8 +65,41 @@ describe("cursorCommitPatch", () => {
 			read,
 			0,
 			{},
+			{},
 		);
 		expect(cleared?.writtenAhead).toBeUndefined();
+	});
+
+	test("saves what the notes are made from beside it, for this source only", () => {
+		const before = {
+			...state,
+			shownAhead: {
+				lastUpdated: { old: "a b" },
+				kindleLastUpdated: { book: "c d" },
+			},
+		};
+		const shown = { page: "2026-10-01T00:05:00.000Z#x y" };
+		expect(
+			cursorCommitPatch(
+				before,
+				"lastUpdated",
+				"2026-10-01T00:00:00.000Z",
+				read,
+				0,
+				{ page: "2026-10-01T00:05:00.000Z#x" },
+				shown,
+			)?.shownAhead,
+		).toEqual({ lastUpdated: shown, kindleLastUpdated: { book: "c d" } });
+		const cleared = cursorCommitPatch(
+			{ ...state, shownAhead: { lastUpdated: { old: "a b" } } },
+			"lastUpdated",
+			"2026-10-01T00:00:00.000Z",
+			read,
+			0,
+			{},
+			{},
+		);
+		expect(cleared?.shownAhead).toBeUndefined();
 	});
 
 	test("writes nothing after a reset was saved (value changed)", () => {
@@ -76,14 +112,15 @@ describe("cursorCommitPatch", () => {
 				read,
 				0,
 				{},
+				{},
 			),
 		).toBeNull();
 	});
 
 	test("writes nothing after a reset was asked for (generation bumped), even if the value is the same", () => {
-		const emptyRead = { value: "", generation: 0, written: {} };
+		const emptyRead = { value: "", generation: 0, written: {}, shown: {} };
 		expect(
-			cursorCommitPatch(state, "summaryLastUpdated", "x", emptyRead, 1, {}),
+			cursorCommitPatch(state, "summaryLastUpdated", "x", emptyRead, 1, {}, {}),
 		).toBeNull();
 	});
 });
