@@ -3,6 +3,8 @@ import type {
 	KindleHighlight,
 } from "src/glasp-api/kindle-highlight/type";
 import { toYaml } from "./frontmatter";
+import { highlightStyleOf, normalizeTags } from "./highlight-fields";
+import { toYamlFlowTags } from "./yaml-tags";
 
 export const normalizeKindleHighlight = (book: KindleBook) => {
 	let content = "";
@@ -21,6 +23,7 @@ export const normalizeKindleHighlight = (book: KindleBook) => {
 		content += `${modifyKindleHighlightText(highlight)}\n\n`;
 	}
 
+	const tags = normalizeTags(book.tags);
 	return {
 		// YAML-escaped so a value like the Amazon placeholder author
 		// "Your Kindle Notes For:" (trailing colon) cannot corrupt the
@@ -30,9 +33,20 @@ export const normalizeKindleHighlight = (book: KindleBook) => {
 		glasp_url: toYaml(book.glasp_url),
 		author: toYaml(book.author),
 		thumbnail_url: toYaml(book.thumbnail_url),
-		tags: book.tags.map((tag) => tag.trim().replace(/\s+/g, "-")),
+		tags,
+		tags_yaml: toYamlFlowTags(tags),
 		updated_at: new Date(book.updated_at).toISOString().slice(0, 10),
 		content,
+		highlights: book.highlights.map((highlight) => ({
+			text: highlight.text,
+			highlight: highlight.text,
+			note: highlight.note ?? "",
+			color: highlight.color,
+			highlightStyle: highlightStyleOf(highlight.color),
+			highlighted_at: highlight.highlighted_at,
+			location: highlight.location ?? null,
+			location_type: highlight.location_type,
+		})),
 	};
 };
 

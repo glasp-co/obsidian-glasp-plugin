@@ -1,35 +1,27 @@
 import type { TFile } from "obsidian";
 import { APIError } from "src/glasp-api/error";
+import { RequestPacer } from "src/glasp-api/request-pacer";
+import { ContentSkippedError } from "src/glasp-api/summary/glasp-summary-api";
+import type { ObsidianApp } from "src/obsidian-api/obsidian-app";
 import {
-	type ObsidianApp,
-	ObsidianNotice,
-	type ObsidianPlugin,
-} from "src/obsidian-api";
-import type { StorageData } from "src/types/storage";
+	NOTE_NAME_MAX_BYTES,
+	NOTE_NAME_SHORT_BYTES,
+	escapeFilename,
+} from "./filename";
+import { PathReserver, pathKey } from "./note-paths";
+import type { FailureStage, SourceCounts, SyncFailure } from "./sync-report";
 
-type Constructor = {
-	obApp: ObsidianApp;
-	obPlugin: ObsidianPlugin;
-	storageData: StorageData;
-};
-
-type LastUpdatedKey =
+export type LastUpdatedKey =
 	| "lastUpdated"
 	| "kindleLastUpdated"
 	| "summaryLastUpdated"
 	| "bookmarkLastUpdated";
 
 /**
- * The server returns at most this many results per page. A page smaller than
- * this is treated as the last page.
- */
-const PAGE_SIZE = 50;
-
-/**
- * Hard safety cap on the number of pages fetched in a single run. At PAGE_SIZE
- * per page this bounds a run to ~50k items and, more importantly, guarantees
- * termination even if the server ever returns a non-advancing cursor (which
- * would otherwise loop forever and grow memory without bound).
+ * Hard safety cap on the number of pages fetched in a single run. It bounds a
+ * run to ~50k items and, more importantly, guarantees termination even if the
+ * server ever returns a non-advancing cursor (which would otherwise loop
+ * forever and grow memory without bound).
  */
 const MAX_PAGES = 1000;
 
@@ -40,6 +32,25 @@ const MAX_PAGES = 1000;
  */
 const WRITE_CONCURRENCY = 16;
 
+/** How many times a create is retried on the next free name. */
+const CREATE_ATTEMPTS = 5;
+
+/**
+ * Minimum gap between two page requests of one source, so a large fetch
+ * (a first sync, or one after a reset) stays under the API's per-minute
+ * limit instead of failing part-way on every run.
+ */
+const PAGE_REQUEST_INTERVAL_MS = 650;
+
+/**
+ * How far before the start of a fetch the saved cursor goes. A repeated
+ * request can be answered as it was a moment before, and the device clock that
+ * stamps the cursor can run ahead of the server's; either could otherwise
+ * skip an item changed just before the run. Fetching such an item again costs
+ * no write.
+ */
+const CURSOR_SAFETY_MARGIN_MS = 10 * 60 * 1000;
+
 /**
  * Frontmatter key used to stamp which Glasp source produced a note. Lets the
  * de-duplication index for a source (e.g. bookmarks) ignore notes written by a
@@ -48,13 +59,18 @@ const WRITE_CONCURRENCY = 16;
  */
 const SOURCE_TYPE_KEY = "Glasp";
 
+/** The `Glasp:` values the summary and bookmark sources stamp. */
+const MARKED_SOURCES: ReadonlySet<string> = new Set(["summary", "bookmark"]);
+
+type Item = { url: string; title: string; updated_at?: string };
+
 /**
  * Describes one importable source (web / Kindle highlights, summaries or
  * bookmarks). The paging, de-duplication and file creation logic is identical
  * across sources, so the differences (endpoint, template, normalizer, folder,
  * last-updated cursor, filename) are injected here.
  */
-export type HighlightImportSource<T extends { url: string; title: string }> = {
+export type HighlightImportSource<T extends Item> = {
 	label: string;
 	folder: string;
 	template: string;
@@ -68,8 +84,9 @@ export type HighlightImportSource<T extends { url: string; title: string }> = {
 	filename?: (item: T) => string;
 	/**
 	 * Optional async enrichment run per item just before it is written (e.g. a
-	 * summary fetching its full body). Best-effort: it should resolve to the
-	 * original item on failure rather than reject.
+	 * summary fetching its full body). If it rejects, the item fails: an
+	 * existing note is left untouched, a new item gets its note without the
+	 * extra data, and the item is fetched again next sync.
 	 */
 	hydrate?: (item: T) => Promise<T>;
 	/**
@@ -80,184 +97,665 @@ export type HighlightImportSource<T extends { url: string; title: string }> = {
 	sourceType?: string;
 };
 
-export class ImportHighlights {
-	private obApp: ObsidianApp;
-	private obPlugin: ObsidianPlugin;
-	private storageData: StorageData;
+export type SourceResult = SourceCounts & { failures: SyncFailure[] };
 
-	constructor({ obApp, obPlugin, storageData }: Constructor) {
+/**
+ * `backfill`: fetch every item, not just those changed since the cursor, and
+ * create a note only for items that have none anywhere in the vault (e.g.
+ * items an earlier version could not save). Existing notes are not touched and
+ * the cursor is not moved.
+ *
+ * `unmarkedFolders`: the output folders of the sources that stamp no `Glasp:`
+ * marker (web and Kindle highlights). A marked source sharing one of them
+ * cannot tell its own unmarked notes (a custom template may leave the marker
+ * out) from theirs.
+ */
+export type RunOptions = { backfill?: boolean; unmarkedFolders?: string[] };
+
+/** A cursor as a run read it when it started. */
+export type CursorRead = { value: string; generation: number };
+
+/**
+ * Read and commit a source's sync cursor. `generation` changes when a setting
+ * invalidates work in progress (turning on "Include full page content" resets
+ * the summary cursor). A run commits its cursor only if, when the write runs,
+ * both the generation and the cursor are still what it read, so a reset made
+ * or saved after the run started always wins.
+ */
+export type CursorStore = {
+	read: (key: LastUpdatedKey) => CursorRead;
+	commit: (
+		key: LastUpdatedKey,
+		value: string,
+		read: CursorRead,
+	) => Promise<boolean>;
+};
+
+export type NoteVault = Pick<
+	ObsidianApp,
+	| "getAllFiles"
+	| "getFileMetadataCache"
+	| "readFrontmatter"
+	| "exists"
+	| "resolveFolder"
+	| "pathTakenChecker"
+	| "render"
+	| "createFileAt"
+	| "updateFile"
+>;
+
+type Constructor = {
+	obApp: NoteVault;
+	cursors: CursorStore;
+	notify: (message: string) => void;
+	/** Gap between page requests; tests pass 0. */
+	pageIntervalMs?: number;
+	/** True once the plugin is unloaded: nothing more is fetched or written. */
+	isCancelled?: () => boolean;
+	/**
+	 * Notes created by this plugin instance, by URL, per source. Merged into
+	 * the index because Obsidian indexes a new note's frontmatter a moment
+	 * after it is created.
+	 */
+	sessionNotes?: (key: LastUpdatedKey) => Map<string, TFile>;
+};
+
+export const describeError = (e: unknown): string => {
+	if (e instanceof APIError) {
+		if (e.status === 0) {
+			return `Could not reach Glasp${e.message ? ` (${e.message})` : ""}`;
+		}
+		return `Glasp API error (HTTP ${e.status})${e.message ? `: ${e.message}` : ""}`;
+	}
+	if (e instanceof Error) {
+		return e.message || e.name;
+	}
+	return String(e);
+};
+
+const isAlreadyExists = (e: unknown): boolean =>
+	/already exists|EEXIST/i.test(describeError(e));
+
+const isNameTooLong = (e: unknown): boolean =>
+	/ENAMETOOLONG|name too long/i.test(describeError(e));
+
+/** The folder as Obsidian names it: "/" as separator, no leading or trailing "/". */
+export const normalizeFolder = (folder: string): string =>
+	String(folder ?? "")
+		.normalize("NFC")
+		.replace(/\\/g, "/")
+		.replace(/\/{2,}/g, "/")
+		.replace(/^\/+|\/+$/g, "")
+		.trim();
+
+/** An item's `updated_at` in ms, or NaN. */
+const updatedAtMs = (item: Item): number =>
+	Date.parse(String(item.updated_at ?? ""));
+
+type Planned =
+	| {
+			kind: "update";
+			item: Item;
+			file: TFile;
+			content: string;
+	  }
+	| {
+			kind: "create";
+			item: Item;
+			name: string;
+			title: string;
+			path: string;
+			content: string;
+	  };
+
+export class ImportHighlights {
+	private obApp: NoteVault;
+	private cursors: CursorStore;
+	private notify: (message: string) => void;
+	private pageIntervalMs: number;
+	private isCancelled: () => boolean;
+	private sessionNotes: (key: LastUpdatedKey) => Map<string, TFile>;
+
+	constructor({
+		obApp,
+		cursors,
+		notify,
+		pageIntervalMs,
+		isCancelled,
+		sessionNotes,
+	}: Constructor) {
 		this.obApp = obApp;
-		this.obPlugin = obPlugin;
-		this.storageData = storageData;
+		this.cursors = cursors;
+		this.notify = notify;
+		this.pageIntervalMs = pageIntervalMs ?? PAGE_REQUEST_INTERVAL_MS;
+		this.isCancelled = isCancelled ?? (() => false);
+		const own = new Map<LastUpdatedKey, Map<string, TFile>>();
+		this.sessionNotes =
+			sessionNotes ??
+			((key) => {
+				let notes = own.get(key);
+				if (!notes) {
+					notes = new Map();
+					own.set(key, notes);
+				}
+				return notes;
+			});
 	}
 
-	async run<T extends { url: string; title: string }>(
-		source: HighlightImportSource<T>,
-	) {
-		new ObsidianNotice(`Updating ${source.label}`);
+	async run<T extends Item>(
+		input: HighlightImportSource<T>,
+		{ backfill = false, unmarkedFolders = [] }: RunOptions = {},
+	): Promise<SourceResult> {
+		const result: SourceResult = {
+			source: input.label,
+			fetched: 0,
+			created: 0,
+			updated: 0,
+			unchanged: 0,
+			failed: 0,
+			failures: [],
+		};
+		// A source-level failure keeps the cursor where it is.
+		let holdCursor = false;
+		const sourceFailure = (stage: FailureStage, message: string) => {
+			holdCursor = true;
+			result.failures.push({ source: input.label, stage, message });
+		};
+		if (this.isCancelled()) {
+			return result;
+		}
 
-		try {
-			const items = await this.pagingFetch({
-				fetchPage: source.fetchPage,
-				updatedAfter: this.storageData[source.lastUpdatedKey],
+		const configured = normalizeFolder(input.folder);
+		if (!configured) {
+			sourceFailure(
+				"folder",
+				"The vault root cannot be the output folder. Choose a folder in Settings → Glasp.",
+			);
+			return result;
+		}
+		// The folder as it exists (a saved name can differ in letter case or
+		// accent encoding, e.g. after syncing from another device), or null.
+		const existingFolder = this.obApp.resolveFolder(configured);
+		const folder = existingFolder ?? configured;
+		const source = { ...input, folder };
+		// Web or Kindle notes in this folder (or below it) carry no marker either.
+		const ownKey = pathKey(folder);
+		const sharedWithUnmarked =
+			!!source.sourceType &&
+			unmarkedFolders.some((other) => {
+				const key = pathKey(normalizeFolder(other));
+				return !!key && (key === ownKey || key.startsWith(`${ownKey}/`));
 			});
 
-			if (!items.length) {
-				this.updateLastUpdate(source.lastUpdatedKey);
-				return;
-			}
+		const cursor = this.cursors.read(source.lastUpdatedKey);
+		this.notify(`Updating ${source.label}`);
+		const startedAt = Date.now();
 
-			const failed = await this.writeItems(source, items);
-			if (failed > 0) {
-				// Some notes could not be written. Do NOT advance the cursor, so those
-				// items are retried on the next sync instead of being skipped forever.
-				new ObsidianNotice(
-					`Updated ${source.label} but ${failed} item(s) could not be saved; will retry next sync.`,
-				);
-			} else {
-				this.updateLastUpdate(source.lastUpdatedKey);
-			}
+		let items: T[];
+		try {
+			items = await this.pagingFetch({
+				fetchPage: source.fetchPage,
+				updatedAfter: backfill ? "" : cursor.value,
+				// With the folder missing, one page tells whether there is anything
+				// to write; fetching the rest every sync would only spend requests.
+				maxPages: existingFolder ? MAX_PAGES : 1,
+				onLimit: () =>
+					result.failures.push({
+						source: source.label,
+						stage: "fetch",
+						message: `Stopped after ${MAX_PAGES} pages (about ${MAX_PAGES * 50} items); older items than those were not imported.`,
+					}),
+			});
 		} catch (e) {
-			if (e instanceof APIError) {
-				if (e.status === 401) {
-					new ObsidianNotice("Access token is invalid");
-					return;
-				}
+			if (e instanceof APIError && e.status === 401) {
+				this.notify("Access token is invalid");
+				sourceFailure("fetch", "The access token is invalid (HTTP 401).");
+				return result;
 			}
-			new ObsidianNotice(`Failed to update ${source.label}`);
+			if (!this.isCancelled()) {
+				this.notify(`Failed to update ${source.label}`);
+			}
+			sourceFailure("fetch", describeError(e));
+			return result;
 		}
+		result.fetched = items.length;
+
+		// A missing folder is reported only when there is something to write,
+		// and then the cursor holds, so nothing is skipped. It is not created:
+		// the user may have deleted it on purpose.
+		if (!existingFolder && items.length) {
+			sourceFailure(
+				"folder",
+				`The folder "${configured}" does not exist. Create it, or choose another folder in Settings → Glasp.`,
+			);
+			return result;
+		}
+
+		// The oldest `updated_at` among the items that failed (null when one of
+		// them has none we can read); +Infinity when none failed.
+		let firstFailedAt: number | null = Number.POSITIVE_INFINITY;
+		if (items.length) {
+			try {
+				firstFailedAt = await this.writeItems(
+					source,
+					items,
+					result,
+					backfill,
+					!sharedWithUnmarked,
+				);
+			} catch (e) {
+				sourceFailure("unexpected", describeError(e));
+			}
+		}
+		if (
+			backfill ||
+			this.isCancelled() ||
+			holdCursor ||
+			firstFailedAt === null
+		) {
+			return result;
+		}
+		const previous = Date.parse(cursor.value);
+		// A cursor later than now (a device clock that ran ahead) would make the
+		// server return nothing ever again, so it is always replaced.
+		const fromTheFuture = !Number.isNaN(previous) && previous > startedAt;
+		if (!items.length && !fromTheFuture) {
+			// Nothing fetched: nothing to move past, and no write to make.
+			return result;
+		}
+
+		// No failure: the next run fetches what changed after this one started.
+		// Failures: up to just before the oldest item that failed. Every older
+		// item was written, and the server filters on the same `updated_at`
+		// (strictly after the cursor, in milliseconds), so the failed items and
+		// everything after them come back next time, and progress is kept.
+		let commitAt = startedAt - CURSOR_SAFETY_MARGIN_MS;
+		if (firstFailedAt !== Number.POSITIVE_INFINITY) {
+			commitAt = Math.min(commitAt, firstFailedAt - 1);
+		}
+		if (!Number.isNaN(previous) && commitAt <= previous && !fromTheFuture) {
+			return result;
+		}
+		try {
+			await this.cursors.commit(
+				source.lastUpdatedKey,
+				new Date(commitAt).toISOString(),
+				cursor,
+			);
+		} catch (e) {
+			if (!this.isCancelled()) {
+				result.failures.push({
+					source: source.label,
+					stage: "cursor",
+					message: `The sync position could not be saved: ${describeError(e)}`,
+				});
+			}
+		}
+		return result;
 	}
 
 	/**
-	 * Iteratively fetch every page after `updatedAfter`. Terminates on an empty
-	 * page, a short (last) page, a null cursor, a non-advancing cursor (server
-	 * bug guard) or the MAX_PAGES cap — so it can never loop forever.
+	 * Fetch every page after `updatedAfter`. A page can hold fewer items than
+	 * the page size even when more follow, so only an empty page, a missing
+	 * cursor, a cursor that did not advance (a guard against looping) or the
+	 * MAX_PAGES cap ends it.
 	 */
-	private async pagingFetch<T extends { url: string; title: string }>({
+	private async pagingFetch<T extends Item>({
 		fetchPage,
 		updatedAfter,
+		maxPages,
+		onLimit,
 	}: {
 		fetchPage: HighlightImportSource<T>["fetchPage"];
 		updatedAfter?: string;
+		maxPages: number;
+		onLimit: () => void;
 	}): Promise<T[]> {
 		const items: T[] = [];
 		let pageCursor: string | undefined;
+		const pacer = new RequestPacer(this.pageIntervalMs);
 
-		for (let page = 0; page < MAX_PAGES; page++) {
+		for (let page = 0; page < maxPages; page++) {
+			if (this.isCancelled()) {
+				break;
+			}
+			await pacer.turn();
 			const response = await fetchPage({ pageCursor, updatedAfter });
 
 			const results = response.results ?? [];
-			if (!results.length) {
-				break;
-			}
 			items.push(...results);
 
-			// A short page is the last page.
-			if (results.length < PAGE_SIZE) {
-				break;
-			}
-
 			const next = response.nextPageCursor;
-			// No further cursor, or a cursor that did not advance: stop rather
-			// than re-fetching the same page forever.
-			if (!next || next === pageCursor) {
+			if (!results.length || !next || next === pageCursor) {
 				break;
 			}
 			pageCursor = next;
 
-			if (page === MAX_PAGES - 1) {
-				new ObsidianNotice(
+			if (page === MAX_PAGES - 1 && maxPages === MAX_PAGES) {
+				this.notify(
 					`Reached the ${MAX_PAGES}-page limit; some items may not have been imported this run.`,
 				);
+				onLimit();
 			}
 		}
 
 		return items;
 	}
 
-	/** Returns the number of items that could not be written. */
-	private async writeItems<T extends { url: string; title: string }>(
+	/** Returns the oldest `updated_at` of the items that failed (see `run`). */
+	private async writeItems<T extends Item>(
 		source: HighlightImportSource<T>,
 		items: T[],
-	): Promise<number> {
-		// De-duplicate by URL up front (keep the latest occurrence) so two items
-		// sharing a URL can never race to create the same file.
-		const deduped = Array.from(
-			new Map(items.map((item) => [item.url, item])).values(),
-		);
+		result: SourceResult,
+		backfill: boolean,
+		looseOwnFolder: boolean,
+	): Promise<number | null> {
+		let firstFailedAt: number | null = Number.POSITIVE_INFINITY;
+		let contentSkipped = 0;
+		const fail = (
+			item: Item,
+			stage: FailureStage,
+			e: unknown,
+			path?: string,
+		) => {
+			result.failed++;
+			const at = updatedAtMs(item);
+			if (Number.isNaN(at)) {
+				firstFailedAt = null;
+			} else if (firstFailedAt !== null) {
+				firstFailedAt = Math.min(firstFailedAt, at);
+			}
+			if (e instanceof ContentSkippedError) {
+				// One row for all of them, below.
+				contentSkipped++;
+				return;
+			}
+			const message = describeError(e);
+			result.failures.push({
+				source: source.label,
+				stage,
+				message:
+					stage === "normalize" && /Invalid time value/.test(message)
+						? "Its date from Glasp could not be read (Invalid time value)."
+						: message,
+				title: String(item.title ?? ""),
+				url: String(item.url ?? ""),
+				...(path ? { path } : {}),
+			});
+		};
 
-		// Build a URL -> existing-file index once (O(files)) instead of scanning
-		// every file for every item (O(items * files)).
-		const index = this.buildFileIndex(source.folder, source.sourceType);
+		// De-duplicate by URL, keeping the most recently updated, so two items
+		// sharing a URL can never race to create the same file. Then write the
+		// oldest first: if the run stops part-way (e.g. at a request limit), the
+		// items written are the oldest ones, and the cursor can move up to them.
+		const byUrl = new Map<string, T>();
+		for (const item of items) {
+			const seen = byUrl.get(item.url);
+			if (!seen || !(updatedAtMs(seen) > updatedAtMs(item))) {
+				byUrl.set(item.url, item);
+			}
+		}
+		const sortKey = (item: Item) => {
+			const at = updatedAtMs(item);
+			return Number.isNaN(at) ? Number.POSITIVE_INFINITY : at;
+		};
+		const { index, anyNote } = await this.buildFileIndex(
+			source.folder,
+			source.sourceType,
+			source.lastUpdatedKey,
+			{ vaultWide: backfill, looseOwnFolder },
+		);
+		let candidates = [...byUrl.values()];
+		if (backfill) {
+			// Only items without a note of their own anywhere in the vault (a note
+			// may have been moved out of the output folder); the others are left
+			// exactly as they are.
+			result.unchanged += candidates.filter((item) =>
+				anyNote.has(item.url),
+			).length;
+			candidates = candidates.filter((item) => !anyNote.has(item.url));
+		}
+		const ordered = candidates.sort((a, b) => sortKey(a) - sortKey(b));
+		const created = this.sessionNotes(source.lastUpdatedKey);
+		const reserver = new PathReserver(this.obApp.pathTakenChecker());
 
 		// Write in bounded-concurrency batches to cap memory / FS pressure. Each
-		// item is isolated so one bad item (e.g. an unwritable filename) cannot
-		// abort the whole run.
-		let failed = 0;
-		for (let i = 0; i < deduped.length; i += WRITE_CONCURRENCY) {
-			const batch = deduped.slice(i, i + WRITE_CONCURRENCY);
-			const results = await Promise.all(
+		// item is isolated so one bad item cannot abort the whole run.
+		for (let i = 0; i < ordered.length; i += WRITE_CONCURRENCY) {
+			if (this.isCancelled()) {
+				break;
+			}
+			const batch = ordered.slice(i, i + WRITE_CONCURRENCY);
+
+			// 1. Optional per-item enrichment, concurrently. If it fails, an
+			// existing note is left untouched; a new item still gets its note,
+			// without the extra data. Either way the item fails, so it is fetched
+			// again next sync and filled in then.
+			const hydrated = await Promise.all(
 				batch.map(async (item) => {
+					if (!source.hydrate) {
+						return { item, resolved: item };
+					}
 					try {
-						// Optional per-item enrichment (e.g. fetch a summary's full body).
-						const resolved = source.hydrate ? await source.hydrate(item) : item;
-						const existing = index.get(item.url);
-						if (existing) {
-							await this.obApp.updateFile({
-								file: existing,
-								template: source.template,
-								data: source.normalize(resolved),
-							});
-						} else {
-							const created = await this.obApp.createFile({
-								folder: source.folder,
-								filename: source.filename
-									? source.filename(resolved)
-									: resolved.title,
-								template: source.template,
-								data: source.normalize(resolved),
-							});
-							// Guard against a later item resolving to the same URL/path.
-							index.set(item.url, created);
-						}
-						return true;
-					} catch (_e) {
-						// Skip this item; keep importing the rest.
-						return false;
+						return { item, resolved: await source.hydrate(item) };
+					} catch (e) {
+						fail(item, "hydrate", e);
+						// While backfilling, create nothing: the next click creates the
+						// note with its body (a normal sync would not fetch it again).
+						return backfill || index.has(item.url)
+							? null
+							: { item, resolved: item };
 					}
 				}),
 			);
-			failed += results.filter((ok) => !ok).length;
+
+			// 2. Render, and pick each new note's path, one item at a time in a
+			// fixed order, so two items whose names clean up to the same file
+			// name can never be given the same path.
+			const planned: Planned[] = [];
+			for (const entry of hydrated) {
+				if (!entry) continue;
+				const { item, resolved } = entry;
+				let data: unknown;
+				try {
+					data = source.normalize(resolved);
+				} catch (e) {
+					fail(item, "normalize", e);
+					continue;
+				}
+				let content: string;
+				try {
+					content = this.obApp.render(source.template, data);
+				} catch (e) {
+					fail(item, "render", e);
+					continue;
+				}
+				const existing = index.get(item.url);
+				if (existing) {
+					planned.push({ kind: "update", item, file: existing, content });
+					continue;
+				}
+				try {
+					const title = String(
+						(source.filename ? source.filename(resolved) : resolved.title) ??
+							"",
+					);
+					const name = escapeFilename(title, NOTE_NAME_MAX_BYTES);
+					const path = reserver.reserve(source.folder, name);
+					planned.push({ kind: "create", item, name, title, path, content });
+				} catch (e) {
+					fail(item, "create", e);
+				}
+			}
+
+			// 3. Write, concurrently. Nothing starts after the plugin is unloaded.
+			await Promise.all(
+				planned.map(async (plan) => {
+					if (this.isCancelled()) {
+						return;
+					}
+					if (plan.kind === "update") {
+						try {
+							const written = await this.obApp.updateFile(
+								plan.file,
+								plan.content,
+								source.label,
+							);
+							if (written) {
+								result.updated++;
+							} else {
+								result.unchanged++;
+							}
+						} catch (e) {
+							fail(plan.item, "update", e, plan.file.path);
+						}
+						return;
+					}
+					try {
+						const file = await this.createWithRetry(
+							source.folder,
+							plan,
+							reserver,
+						);
+						// Guard against a later item resolving to the same URL/path, and
+						// against the next pass not seeing it before Obsidian indexes it.
+						if (file) {
+							index.set(plan.item.url, file);
+							created.set(plan.item.url, file);
+						}
+						result.created++;
+					} catch (e) {
+						const path = e instanceof CreateError ? e.path : plan.path;
+						fail(
+							plan.item,
+							"create",
+							e instanceof CreateError ? e.original : e,
+							path,
+						);
+					}
+				}),
+			);
 		}
-		return failed;
+
+		if (contentSkipped > 0) {
+			result.failures.push({
+				source: source.label,
+				stage: "hydrate",
+				message: backfill
+					? `${contentSkipped} summaries were not created because Glasp's request limit for full page content was reached. Run Create missing notes again later (for example tomorrow) to create them.`
+					: `Full page content was not downloaded for ${contentSkipped} summaries because Glasp's request limit was reached. They are fetched on the next syncs, oldest first.`,
+			});
+		}
+		return firstFailedAt;
 	}
 
-	private buildFileIndex(
+	/**
+	 * Create at the reserved path. If the vault says the path exists after all,
+	 * move to the next free name (up to CREATE_ATTEMPTS tries in all); if the
+	 * file system says the name is too long, retry once with a shorter name.
+	 */
+	private async createWithRetry(
 		folder: string,
-		sourceType?: string,
-	): Map<string, TFile> {
+		plan: Extract<Planned, { kind: "create" }>,
+		reserver: PathReserver,
+	): Promise<TFile> {
+		let path = plan.path;
+		let name = plan.name;
+		let shortened = false;
+		for (let attempt = 1; ; attempt++) {
+			try {
+				return await this.obApp.createFileAt(path, plan.content);
+			} catch (e) {
+				if (attempt >= CREATE_ATTEMPTS) {
+					throw new CreateError(path, e);
+				}
+				if (isAlreadyExists(e)) {
+					path = reserver.reserve(folder, name);
+					continue;
+				}
+				if (isNameTooLong(e) && !shortened) {
+					shortened = true;
+					name = escapeFilename(plan.title, NOTE_NAME_SHORT_BYTES);
+					path = reserver.reserve(folder, name);
+					continue;
+				}
+				throw new CreateError(path, e);
+			}
+		}
+	}
+
+	/**
+	 * URL -> existing note, for one source's folder (subfolders included). A
+	 * note Obsidian has not indexed yet (just synced in, or just created) is
+	 * read directly, so it is not mistaken for a missing one and duplicated.
+	 */
+	private async buildFileIndex(
+		folder: string,
+		sourceType: string | undefined,
+		key: LastUpdatedKey,
+		scan: { vaultWide: boolean; looseOwnFolder: boolean },
+	): Promise<{ index: Map<string, TFile>; anyNote: Set<string> }> {
 		const index = new Map<string, TFile>();
+		// For Create missing notes: URLs that already have a note of this source.
+		const anyNote = new Set<string>();
 		const prefix = `${folder}/`;
 		for (const file of this.obApp.getAllFiles()) {
-			if (!file.path.startsWith(prefix)) {
+			if (!file.path.endsWith(".md")) {
 				continue;
 			}
-			const frontmatter = this.obApp.getFileMetadataCache(file)?.frontmatter;
-			// When this source stamps a marker, only match notes from the same source
-			// so a shared folder cannot cross-clobber another source's notes.
-			if (sourceType && frontmatter?.[SOURCE_TYPE_KEY] !== sourceType) {
+			const inFolder = file.path.startsWith(prefix);
+			if (!inFolder && !scan.vaultWide) {
 				continue;
 			}
+			// Read the file itself when Obsidian has no frontmatter for it: not
+			// indexed yet (just synced in or just created), or frontmatter it
+			// cannot parse (0.3.0 wrote some, e.g. for a tag with a comma). The
+			// note is then updated in place, which also repairs it. Elsewhere in
+			// the vault only what Obsidian has indexed is used.
+			const frontmatter =
+				this.obApp.getFileMetadataCache(file)?.frontmatter ??
+				(inFolder ? await this.obApp.readFrontmatter(file) : null);
+			const marker = frontmatter?.[SOURCE_TYPE_KEY];
 			const url = frontmatter?.URL;
-			if (typeof url === "string" && url) {
+			if (typeof url !== "string" || !url) {
+				continue;
+			}
+			// A source that stamps a marker only matches its own notes; one that
+			// does not (web, Kindle) never matches a note a marked source wrote,
+			// so a shared or nested folder cannot cross-clobber notes. Any other
+			// `Glasp:` value (e.g. one a user's own template adds) is not a marker.
+			const marked = typeof marker === "string" && MARKED_SOURCES.has(marker);
+			const own = sourceType ? marker === sourceType : !marked;
+			// In its own folder a marked source also counts unmarked notes (its
+			// template may leave the marker out), unless web or Kindle notes can
+			// be there too.
+			if (own || (inFolder && scan.looseOwnFolder && !marked)) {
+				anyNote.add(url);
+			}
+			if (inFolder && own) {
 				index.set(url, file);
 			}
 		}
-		return index;
+		for (const [url, file] of this.sessionNotes(key)) {
+			if (
+				!index.has(url) &&
+				file.path.startsWith(prefix) &&
+				this.obApp.exists(file.path)
+			) {
+				index.set(url, file);
+				anyNote.add(url);
+			}
+		}
+		return { index, anyNote };
 	}
+}
 
-	private updateLastUpdate(key: LastUpdatedKey) {
-		this.storageData[key] = new Date().toISOString();
-		this.obPlugin.saveData(this.storageData);
+/** A create that failed at `path` (the last path tried). */
+class CreateError extends Error {
+	constructor(
+		readonly path: string,
+		readonly original: unknown,
+	) {
+		super(describeError(original));
 	}
 }
