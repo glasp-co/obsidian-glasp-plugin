@@ -85,6 +85,26 @@ describe("writtenAhead", () => {
 	});
 });
 
+describe("shownAhead", () => {
+	test("keeps well-formed entries and drops anything else", () => {
+		const data = normalizeStorageData({
+			shownAhead: {
+				lastUpdated: { "https://a": "2026-10-01T00:00:00.000Z#x y", bad: 7 },
+				summaryLastUpdated: ["not an object"],
+				notACursor: { x: "y" },
+			},
+		} as never);
+		expect(data.shownAhead).toEqual({
+			lastUpdated: { "https://a": "2026-10-01T00:00:00.000Z#x y" },
+		});
+	});
+
+	test("a data.json without it is not changed by reading it", () => {
+		const data = normalizeStorageData({ accessToken: "t" } as never);
+		expect("shownAhead" in data).toBe(false);
+	});
+});
+
 describe("readStorageFile", () => {
 	test("tells a missing, a readable and an unreadable data.json apart", () => {
 		expect(readStorageFile(null)).toEqual({ readable: true, data: null });

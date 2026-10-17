@@ -48,10 +48,12 @@ export const normalizeStorageData = (
 	raw: Partial<StorageData> | null | undefined,
 ): StorageData => {
 	const report = readStoredReport(raw?.lastSyncReport);
-	const writtenAhead = readWrittenAhead(raw?.writtenAhead);
+	const writtenAhead = readAheadMap(raw?.writtenAhead);
+	const shownAhead = readAheadMap(raw?.shownAhead);
 	const {
 		lastSyncReport: _unread,
 		writtenAhead: _unreadToo,
+		shownAhead: _unreadEither,
 		...unknownAndKnown
 	} = raw ?? {};
 	return {
@@ -82,6 +84,7 @@ export const normalizeStorageData = (
 		createBasesViews: raw?.createBasesViews ?? true,
 		...(report ? { lastSyncReport: report } : {}),
 		...(writtenAhead ? { writtenAhead } : {}),
+		...(shownAhead ? { shownAhead } : {}),
 	};
 };
 
@@ -92,8 +95,8 @@ const CURSOR_KEYS: CursorKey[] = [
 	"bookmarkLastUpdated",
 ];
 
-/** A stored `writtenAhead` with only well-formed entries, or undefined. */
-const readWrittenAhead = (
+/** A stored `writtenAhead` or `shownAhead` with only well-formed entries, or undefined. */
+const readAheadMap = (
 	value: unknown,
 ): StorageData["writtenAhead"] | undefined => {
 	if (!value || typeof value !== "object" || Array.isArray(value)) {

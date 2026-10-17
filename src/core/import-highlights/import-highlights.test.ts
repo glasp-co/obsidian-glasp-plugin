@@ -14,6 +14,7 @@ import {
 } from "./import-highlights";
 import { normalizeHighlight } from "./normalize-highlight";
 import { renderTemplate } from "./template-engine";
+import { useYamlParser } from "./yaml-tags";
 
 const FOLDER = "Glasp";
 
@@ -50,6 +51,17 @@ const item = (
 	...extra,
 });
 
+/** The version 0.4.1 remembered for an item: a hash of it as the API sent it. */
+const version041 = (h: UserHighlight) => {
+	const text = JSON.stringify(h);
+	let hash = 0x811c9dc5;
+	for (let i = 0; i < text.length; i++) {
+		hash ^= text.charCodeAt(i);
+		hash = Math.imul(hash, 0x01000193);
+	}
+	return `${h.updated_at}#${(hash >>> 0).toString(36)}`;
+};
+
 const rendered = (h: UserHighlight) =>
 	renderTemplate(HIGHLIGHT_TEMPLATE, normalizeHighlight(h));
 
@@ -63,23 +75,28 @@ const cursors = (initial: Partial<Record<LastUpdatedKey, string>> = {}) => {
 	const state: Record<string, string> = { ...initial };
 	const generations: Record<string, number> = {};
 	const written: Record<string, Record<string, string>> = {};
+	const shown: Record<string, Record<string, string>> = {};
+	let commits = 0;
 	const store: CursorStore = {
 		read: (key) => ({
 			value: state[key] ?? "",
 			generation: generations[key] ?? 0,
 			written: written[key] ?? {},
+			shown: shown[key] ?? {},
 		}),
 		// As the plugin does it: only if neither the generation nor the cursor
 		// changed since the run read them.
-		commit: async (key, value, read, ahead) => {
+		commit: async (key, value, read, ahead, aheadShown) => {
 			if ((generations[key] ?? 0) !== read.generation) return false;
 			if ((state[key] ?? "") !== read.value) return false;
 			state[key] = value;
 			written[key] = ahead;
+			shown[key] = aheadShown;
+			commits++;
 			return true;
 		},
 	};
-	return { store, state, generations, written };
+	return { store, state, generations, written, shown, commits: () => commits };
 };
 
 /** A server that filters on `updated_at` like Glasp's. */
@@ -1438,6 +1455,7 @@ describe("ImportHighlights.run", () => {
 		expect(Object.keys(c.written.lastUpdated)).toEqual([
 			"https://example.com/2",
 		]);
+		expect(Object.keys(c.shown.lastUpdated)).toEqual(["https://example.com/2"]);
 	});
 
 	test("what was written is remembered when an item with an unreadable date keeps the cursor still", async () => {
@@ -1484,8 +1502,7 @@ describe("ImportHighlights.run", () => {
 	});
 
 	test("an item whose content changed without a new update time is written again", async () => {
-		// A Kindle book is stamped with the day of its latest annotation, so a
-		// highlight added the same day keeps the time.
+		// A Kindle book can keep its update time when a highlight is added.
 		const at = new Date(Date.now() - 60 * 1000).toISOString();
 		const all = [item(1, { updated_at: at })];
 		const { fetchPage } = serving(all);
@@ -1501,6 +1518,264 @@ describe("ImportHighlights.run", () => {
 		const second = await importer(vault, c.store).run(src);
 
 		expect(second).toMatchObject({ updated: 1 });
+	});
+
+	test("a value the note does not show changing alone leaves an edited note alone", async () => {
+		const at = new Date(Date.now() - 60 * 1000).toISOString();
+		const video = (author: string): UserHighlight =>
+			({
+				...item(1, { updated_at: at, title: "Page 1" }),
+				author,
+			}) as UserHighlight;
+		const all = [video("")];
+		const { fetchPage } = serving(all);
+		const vault = new FakeVault([FOLDER]);
+		const c = cursors();
+		const { src } = source([], { fetchPage });
+		await importer(vault, c.store).run(src);
+		const note = vault.files.get(`${FOLDER}/Page 1.md`);
+		if (!note) throw new Error("no note");
+		note.content += "\n## My thoughts\n";
+		// Values the note does not show changed; nothing it shows did.
+		all[0] = { ...video("A channel"), title: "A video" };
+
+		const second = await importer(vault, c.store).run(src);
+
+		expect(second).toMatchObject({ fetched: 1, updated: 0, unchanged: 1 });
+		expect(vault.files.get(`${FOLDER}/Page 1.md`)?.content).toContain(
+			"## My thoughts",
+		);
+		// Remembered as 0.4.1 remembers it, so a device still on 0.4.1 that
+		// shares data.json leaves the note alone too.
+		expect(c.written.lastUpdated[all[0].url]).toBe(version041(all[0]));
+	});
+
+	test("an item remembered by 0.4.1 still counts as written, and what its note is made from is remembered beside it", async () => {
+		const h = item(1);
+		const vault = new FakeVault([FOLDER]);
+		vault.seed(`${FOLDER}/Page 1.md`, `${rendered(h)}\n## Mine\n`);
+		const c = cursors({ lastUpdated: "2026-09-01T00:00:00.000Z" });
+		c.written.lastUpdated = { [h.url]: version041(h) };
+
+		const result = await importer(vault, c.store).run(source([h]).src);
+
+		expect(result).toMatchObject({ fetched: 1, updated: 0, unchanged: 1 });
+		expect(vault.files.get(`${FOLDER}/Page 1.md`)?.content).toContain(
+			"## Mine",
+		);
+		// As 0.4.1 remembers it, so a device still on 0.4.1 keeps matching it.
+		expect(c.written.lastUpdated[h.url]).toBe(version041(h));
+		expect(c.shown.lastUpdated[h.url]?.startsWith(`${version041(h)} `)).toBe(
+			true,
+		);
+	});
+
+	test("what a note is made from is saved even when nothing else changed (the first sync after updating from 0.4.1)", async () => {
+		const at = new Date(Date.now() - 60 * 1000).toISOString();
+		const h = item(1, { updated_at: at });
+		const vault = new FakeVault([FOLDER]);
+		vault.seed(`${FOLDER}/Page 1.md`, `${rendered(h)}\n## Mine\n`);
+		// Where 0.4.1 left it: the cursor just before the item, the item remembered.
+		const cursor = new Date(Date.parse(at) - 1).toISOString();
+		const c = cursors({ lastUpdated: cursor });
+		c.written.lastUpdated = { [h.url]: version041(h) };
+		const { fetchPage } = serving([h]);
+		const { src } = source([], { fetchPage });
+
+		await importer(vault, c.store).run(src);
+		expect(c.state.lastUpdated).toBe(cursor);
+		expect(c.shown.lastUpdated?.[h.url]).toBeDefined();
+		// So a value the note does not show changing next is left alone.
+		const { fetchPage: later } = serving([
+			{ ...h, author: "A channel" } as UserHighlight,
+		]);
+		const second = await importer(vault, c.store).run(
+			source([], { fetchPage: later }).src,
+		);
+
+		expect(second).toMatchObject({ fetched: 1, updated: 0, unchanged: 1 });
+		expect(vault.files.get(`${FOLDER}/Page 1.md`)?.content).toContain(
+			"## Mine",
+		);
+	});
+
+	test("an item another device wrote again since is judged by what it is now, not by what its note showed before", async () => {
+		// This device remembered what the note of v1 showed; a device still on
+		// 0.4.1 then wrote v2 (it remembers the item, not what its note shows).
+		// v3 shows what v1 showed, but the note shows v2: it is written again.
+		const at = new Date(Date.now() - 60 * 1000).toISOString();
+		const v1 = item(1, { updated_at: at });
+		const v2 = item(1, { updated_at: at, document_note: "written elsewhere" });
+		const v3 = { ...v1, author: "A channel" } as UserHighlight;
+		const all = [v1];
+		const { fetchPage } = serving(all);
+		const vault = new FakeVault([FOLDER]);
+		const c = cursors();
+		const { src } = source([], { fetchPage });
+		await importer(vault, c.store).run(src);
+		c.written.lastUpdated = { [v1.url]: version041(v2) };
+		const note = vault.files.get(`${FOLDER}/Page 1.md`);
+		if (!note) throw new Error("no note");
+		note.content = rendered(v2);
+		all[0] = v3;
+
+		const result = await importer(vault, c.store).run(src);
+
+		expect(result).toMatchObject({ fetched: 1, updated: 1, unchanged: 0 });
+		expect(vault.files.get(`${FOLDER}/Page 1.md`)?.content).toBe(rendered(v3));
+	});
+
+	test("what a note was made from is forgotten once another device remembers its item differently", async () => {
+		const at = new Date(Date.now() - 60 * 1000).toISOString();
+		const all = [item(1, { updated_at: at }), item(2, { updated_at: at })];
+		const { fetchPage } = serving(all);
+		const vault = new FakeVault([FOLDER]);
+		const c = cursors();
+		const { src } = source([], { fetchPage });
+		await importer(vault, c.store).run(src);
+		// A device on 0.4.1 wrote item 2 again; item 2 is then deleted on Glasp.
+		c.written.lastUpdated = {
+			...c.written.lastUpdated,
+			[all[1].url]: `${at}#elsewhere`,
+		};
+		all.pop();
+		all[0] = { ...all[0], author: "A channel" } as UserHighlight;
+
+		await importer(vault, c.store).run(src);
+
+		expect(Object.keys(c.shown.lastUpdated)).toEqual([all[0].url]);
+	});
+
+	test("a note written but not remembered is written again when its page changes back the same day", async () => {
+		// v2 was written to the note, but the plugin was unloaded before it
+		// remembered that (or another device's commit won). Then the change is
+		// undone the same day: v3 shows what v1 showed, with a new update time.
+		const v1 = item(1, { updated_at: "2026-09-24T10:00:00.000Z" });
+		const v2 = item(1, {
+			updated_at: "2026-09-24T10:30:00.000Z",
+			document_note: "added, then removed",
+		});
+		const v3 = item(1, { updated_at: "2026-09-24T11:00:00.000Z" });
+		const all = [v1];
+		const { fetchPage } = serving(all);
+		const vault = new FakeVault([FOLDER]);
+		const c = cursors({ lastUpdated: "2026-09-01T00:00:00.000Z" });
+		const { src } = source([], { fetchPage });
+		await importer(vault, c.store).run(src);
+		const note = vault.files.get(`${FOLDER}/Page 1.md`);
+		if (!note) throw new Error("no note");
+		note.content = rendered(v2);
+		all[0] = v3;
+
+		const result = await importer(vault, c.store).run(src);
+
+		expect(result).toMatchObject({ fetched: 1, updated: 1, unchanged: 0 });
+		expect(vault.files.get(`${FOLDER}/Page 1.md`)?.content).toBe(rendered(v3));
+	});
+
+	test("a sync that finds everything it fetched up to date writes nothing", async () => {
+		// Older than the margin, so the cursor stays just before it.
+		const at = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+		const { fetchPage } = serving([item(1, { updated_at: at })]);
+		const vault = new FakeVault([FOLDER]);
+		const c = cursors();
+		const { src } = source([], { fetchPage });
+		await importer(vault, c.store).run(src);
+		const commits = c.commits();
+
+		const second = await importer(vault, c.store).run(src);
+
+		expect(second).toMatchObject({ fetched: 1, unchanged: 1 });
+		expect(c.commits()).toBe(commits);
+	});
+
+	test("Obsidian's YAML parser reading a tag differently leaves an edited note alone", async () => {
+		const at = new Date(Date.now() - 60 * 1000).toISOString();
+		const all = [item(1, { updated_at: at })];
+		const { fetchPage } = serving(all);
+		const vault = new FakeVault([FOLDER]);
+		const c = cursors();
+		const { src } = source([], { fetchPage });
+		try {
+			await importer(vault, c.store).run(src);
+			const note = vault.files.get(`${FOLDER}/Page 1.md`);
+			if (!note) throw new Error("no note");
+			note.content += "\n## Mine\n";
+			// An Obsidian update whose parser no longer reads the tag back as
+			// itself (`{{tags_yaml}}` would now quote it), while a value the note
+			// does not show changed too, so what the note shows decides.
+			useYamlParser(() => ({ Tags: ["something else"] }));
+			all[0] = { ...all[0], author: "A channel" } as UserHighlight;
+
+			const second = await importer(vault, c.store).run(src);
+
+			expect(second).toMatchObject({ fetched: 1, updated: 0, unchanged: 1 });
+			expect(vault.files.get(`${FOLDER}/Page 1.md`)?.content).toContain(
+				"## Mine",
+			);
+		} finally {
+			useYamlParser(undefined);
+		}
+	});
+
+	test("an item with extra data fetched for its note is remembered as fetched, so it is not fetched again unchanged", async () => {
+		const at = new Date(Date.now() - 60 * 1000).toISOString();
+		const { fetchPage } = serving([item(1, { updated_at: at })]);
+		const vault = new FakeVault([FOLDER]);
+		const c = cursors();
+		const hydrate = vi.fn(async (h: UserHighlight) => ({
+			...h,
+			document_note: "the full body",
+		}));
+		const { src } = source([], { fetchPage, hydrate });
+		await importer(vault, c.store).run(src);
+		const note = vault.files.get(`${FOLDER}/Page 1.md`);
+		if (!note) throw new Error("no note");
+		expect(note.content).toContain("the full body");
+		note.content += "\n## Mine\n";
+		const { fetchPage: later } = serving([
+			{ ...item(1, { updated_at: at }), author: "A channel" } as UserHighlight,
+		]);
+
+		const second = await importer(vault, c.store).run(
+			source([], { fetchPage: later, hydrate }).src,
+		);
+
+		expect(second).toMatchObject({ fetched: 1, updated: 0, unchanged: 1 });
+		expect(hydrate).toHaveBeenCalledTimes(1);
+		expect(vault.files.get(`${FOLDER}/Page 1.md`)?.content).toContain(
+			"## Mine",
+		);
+	});
+
+	test("a remembered item that comes back unreadable is not left alone: it fails", async () => {
+		const at = new Date(Date.now() - 60 * 1000).toISOString();
+		const all = [item(1, { updated_at: at })];
+		const { fetchPage } = serving(all);
+		const vault = new FakeVault([FOLDER]);
+		const c = cursors();
+		const { src } = source([], { fetchPage });
+		await importer(vault, c.store).run(src);
+		expect(Object.keys(c.written.lastUpdated)).toEqual([all[0].url]);
+		all[0] = { ...all[0], highlights: null } as unknown as UserHighlight;
+
+		const second = await importer(vault, c.store).run(src);
+
+		expect(second).toMatchObject({ unchanged: 0, failed: 1 });
+		expect(second.failures[0]).toMatchObject({ stage: "normalize" });
+	});
+
+	test("a tag given as a string does not fail the item", async () => {
+		const vault = new FakeVault([FOLDER]);
+		const c = cursors({ lastUpdated: "2026-09-01T00:00:00.000Z" });
+		const h = { ...item(1), tags: "reading" } as unknown as UserHighlight;
+
+		const result = await importer(vault, c.store).run(source([h]).src);
+
+		expect(result).toMatchObject({ created: 1, failed: 0 });
+		expect(vault.files.get(`${FOLDER}/Page 1.md`)?.content).toContain(
+			"Tags: [reading]",
+		);
 	});
 
 	test("once the plugin is unloaded, a failed page is not asked for again", async () => {
