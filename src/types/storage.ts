@@ -46,6 +46,14 @@ export type StorageData = {
 	 * left alone, whatever happened to its note since.
 	 */
 	writtenAhead?: Partial<Record<CursorKey, Record<string, string>>>;
+	/**
+	 * For those items, what their notes are made from (URL → the
+	 * `writtenAhead` version it was taken with and a hash of the item
+	 * normalized for its template). An item that comes back with only values
+	 * its note does not show changed is left alone too. Kept apart from
+	 * `writtenAhead`, which a device still on 0.4.1 matches exactly.
+	 */
+	shownAhead?: Partial<Record<CursorKey, Record<string, string>>>;
 };
 
 /** The four sources' cursor fields. */

@@ -224,10 +224,13 @@ export default class ObsidianGlaspPlugin extends Plugin {
 				// Every summary is to be written again, with its content.
 				const { summaryLastUpdated: _reset, ...others } =
 					state.writtenAhead ?? {};
+				const { summaryLastUpdated: _resetToo, ...othersShown } =
+					state.shownAhead ?? {};
 				return {
 					summaryIncludeContent: true,
 					summaryLastUpdated: "",
 					writtenAhead: Object.keys(others).length ? others : undefined,
+					shownAhead: Object.keys(othersShown).length ? othersShown : undefined,
 				};
 			});
 		} else {
@@ -325,7 +328,7 @@ export default class ObsidianGlaspPlugin extends Plugin {
 			return Promise.resolve();
 		}
 		if (this.backfillRequested || this.backfillRunning) {
-			// A second full fetch would only spend the API's daily allowance.
+			// A second full fetch would only spend requests.
 			new ObsidianNotice("Create missing notes is already running.");
 			return Promise.resolve();
 		}
@@ -381,9 +384,10 @@ export default class ObsidianGlaspPlugin extends Plugin {
 					value: this.store.get()[key],
 					generation: this.generations[key],
 					written: this.store.get().writtenAhead?.[key] ?? {},
+					shown: this.store.get().shownAhead?.[key] ?? {},
 				}),
 				// Evaluated inside the state writer, when the write runs.
-				commit: (key, value, read, written) =>
+				commit: (key, value, read, written, shown) =>
 					this.store.update((state) =>
 						cursorCommitPatch(
 							state,
@@ -392,6 +396,7 @@ export default class ObsidianGlaspPlugin extends Plugin {
 							read,
 							this.generations[key],
 							written,
+							shown,
 						),
 					),
 			},
