@@ -4,7 +4,12 @@ import ObsidianGlaspPlugin from "../main";
 import { ObsidianApp } from "../obsidian-api/obsidian-app";
 import { SettingTab } from "./setting-tab";
 
-vi.stubGlobal("window", { setInterval: () => 1, clearInterval: () => {} });
+vi.stubGlobal("window", {
+	setInterval: () => 1,
+	clearInterval: () => {},
+	setTimeout: () => 1,
+	clearTimeout: () => {},
+});
 
 test("a click right after typing waits for the save the typing started", async () => {
 	const vault = new FakeVault(["Glasp"]);

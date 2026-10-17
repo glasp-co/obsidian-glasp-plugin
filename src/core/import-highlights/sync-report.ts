@@ -137,7 +137,16 @@ export const readStoredReport = (value: unknown): SyncReport | null => {
 		Array.isArray((value as { failures?: unknown }).failures) &&
 		Array.isArray((value as { sources?: unknown }).sources)
 	) {
-		return value as SyncReport;
+		// Rows that are not objects (a hand-edited or damaged file) are dropped,
+		// so the settings tab can always show the rest.
+		const report = value as SyncReport;
+		const isRow = (row: unknown) =>
+			!!row && typeof row === "object" && !Array.isArray(row);
+		return {
+			...report,
+			sources: report.sources.filter(isRow),
+			failures: report.failures.filter(isRow),
+		};
 	}
 	return null;
 };

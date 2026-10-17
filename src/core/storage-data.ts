@@ -1,4 +1,8 @@
-import type { StorageData, UpdateFrequency } from "src/types/storage";
+import type {
+	CursorKey,
+	StorageData,
+	UpdateFrequency,
+} from "src/types/storage";
 import { readStoredReport } from "./import-highlights/sync-report";
 
 /** Anything else (hand-edited, or from a newer version) falls back to daily. */
@@ -44,7 +48,12 @@ export const normalizeStorageData = (
 	raw: Partial<StorageData> | null | undefined,
 ): StorageData => {
 	const report = readStoredReport(raw?.lastSyncReport);
-	const { lastSyncReport: _unread, ...unknownAndKnown } = raw ?? {};
+	const writtenAhead = readWrittenAhead(raw?.writtenAhead);
+	const {
+		lastSyncReport: _unread,
+		writtenAhead: _unreadToo,
+		...unknownAndKnown
+	} = raw ?? {};
 	return {
 		...unknownAndKnown,
 		accessToken: raw?.accessToken ?? "",
@@ -72,5 +81,35 @@ export const normalizeStorageData = (
 			: (raw?.basesCreated ?? {}),
 		createBasesViews: raw?.createBasesViews ?? true,
 		...(report ? { lastSyncReport: report } : {}),
+		...(writtenAhead ? { writtenAhead } : {}),
 	};
+};
+
+const CURSOR_KEYS: CursorKey[] = [
+	"lastUpdated",
+	"kindleLastUpdated",
+	"summaryLastUpdated",
+	"bookmarkLastUpdated",
+];
+
+/** A stored `writtenAhead` with only well-formed entries, or undefined. */
+const readWrittenAhead = (
+	value: unknown,
+): StorageData["writtenAhead"] | undefined => {
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		return undefined;
+	}
+	const out: NonNullable<StorageData["writtenAhead"]> = {};
+	for (const key of CURSOR_KEYS) {
+		const entries = (value as Record<string, unknown>)[key];
+		if (!entries || typeof entries !== "object" || Array.isArray(entries)) {
+			continue;
+		}
+		const kept: Record<string, string> = {};
+		for (const [url, at] of Object.entries(entries)) {
+			if (typeof at === "string") kept[url] = at;
+		}
+		if (Object.keys(kept).length) out[key] = kept;
+	}
+	return Object.keys(out).length ? out : undefined;
 };
