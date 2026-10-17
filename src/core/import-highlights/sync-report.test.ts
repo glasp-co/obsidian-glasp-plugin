@@ -128,3 +128,24 @@ describe("readStoredReport", () => {
 		expect(readStoredReport("x")).toBeNull();
 	});
 });
+
+describe("readStoredReport", () => {
+	test("drops rows that are not objects, so the rest can be shown", () => {
+		const read = readStoredReport({
+			schemaVersion: 1,
+			finishedAt: "2026-10-17T00:00:00.000Z",
+			totalFailures: 1,
+			truncated: false,
+			sources: [null, { source: "web highlights", fetched: 1 }],
+			failures: [
+				null,
+				7,
+				{ source: "web highlights", stage: "create", message: "x" },
+			],
+		});
+		expect(read?.sources).toHaveLength(1);
+		expect(read?.failures).toEqual([
+			{ source: "web highlights", stage: "create", message: "x" },
+		]);
+	});
+});

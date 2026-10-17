@@ -17,10 +17,23 @@ export const cursorCommitPatch = (
 	value: string,
 	read: CursorRead,
 	generationNow: number,
-): Partial<StorageData> | null =>
-	generationNow === read.generation && state[key] === read.value
-		? ({ [key]: value } as Partial<StorageData>)
-		: null;
+	written: Record<string, string>,
+): Partial<StorageData> | null => {
+	if (generationNow !== read.generation || state[key] !== read.value) {
+		return null;
+	}
+	const writtenAhead = { ...(state.writtenAhead ?? {}) };
+	if (Object.keys(written).length) {
+		writtenAhead[key] = written;
+	} else {
+		delete writtenAhead[key];
+	}
+	return {
+		[key]: value,
+		// Left out of data.json when there is nothing to remember.
+		writtenAhead: Object.keys(writtenAhead).length ? writtenAhead : undefined,
+	} as Partial<StorageData>;
+};
 
 /**
  * The patch that records Bases views written by a run, or null when "Create

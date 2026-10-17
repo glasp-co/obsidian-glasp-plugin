@@ -19,8 +19,14 @@ export class FakeVault {
 	failRead = false;
 	/** Paths Obsidian has not indexed yet: getFileCache returns null for them. */
 	notIndexed = new Set<string>();
+	/**
+	 * Paths whose frontmatter Obsidian could not parse. Obsidian 1.14 then
+	 * indexes the note with a leading "yaml" section and no frontmatter.
+	 */
+	unparsable = new Set<string>();
 	private clock = 0;
-	private handles = new Map<string, TFile>();
+	/** One TFile per note, as Obsidian keeps: a note deleted and created again is another TFile. */
+	private handles = new WeakMap<Entry, TFile>();
 
 	constructor(folders: string[] = []) {
 		for (const f of folders) this.folders.add(f);
@@ -35,10 +41,14 @@ export class FakeVault {
 	}
 
 	private handle(path: string): TFile {
-		let file = this.handles.get(path);
+		const entry = this.files.get(path);
+		if (!entry) {
+			return { path } as TFile;
+		}
+		let file = this.handles.get(entry);
 		if (!file) {
 			file = { path } as TFile;
-			this.handles.set(path, file);
+			this.handles.set(entry, file);
 		}
 		return file;
 	}
@@ -95,6 +105,21 @@ export class FakeVault {
 			createFolder: async (path: string) => {
 				this.folders.add(path);
 			},
+			configDir: ".obsidian",
+			// The disk, which ignores letter case and accent composition, as on
+			// macOS, and holds files Obsidian has not listed yet.
+			adapter: {
+				read: async (path: string) => {
+					const key = (p: string) => p.normalize("NFC").toLowerCase();
+					const entry = [...this.files.values()].find(
+						(e) => key(e.path) === key(path),
+					);
+					if (!entry) throw new Error("ENOENT");
+					return entry.content;
+				},
+				exists: async (path: string) =>
+					this.files.has(path) || this.folders.has(path),
+			},
 		};
 		const metadataCache = {
 			getFileCache: (file: TFile) => {
@@ -102,6 +127,9 @@ export class FakeVault {
 				if (!entry || this.notIndexed.has(file.path)) return null;
 				const match = /^---\n([\s\S]*?)\n---/.exec(entry.content);
 				if (!match) return {};
+				if (this.unparsable.has(file.path)) {
+					return { sections: [{ type: "yaml" }, { type: "paragraph" }] };
+				}
 				const frontmatter: Record<string, unknown> = {};
 				for (const line of match[1].split("\n")) {
 					const at = line.indexOf(": ");

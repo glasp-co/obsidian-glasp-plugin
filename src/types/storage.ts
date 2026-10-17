@@ -38,7 +38,22 @@ export type StorageData = {
 	createBasesViews: boolean;
 	/** What failed in the last sync; never read to decide what to import. */
 	lastSyncReport?: SyncReport;
+	/**
+	 * Per source, the items this device has already written that are newer
+	 * than its cursor (URL → `updated_at` and a hash of the item). The cursor
+	 * keeps a safety margin,
+	 * so the next sync fetches these again; one that comes back unchanged is
+	 * left alone, whatever happened to its note since.
+	 */
+	writtenAhead?: Partial<Record<CursorKey, Record<string, string>>>;
 };
+
+/** The four sources' cursor fields. */
+export type CursorKey =
+	| "lastUpdated"
+	| "kindleLastUpdated"
+	| "summaryLastUpdated"
+	| "bookmarkLastUpdated";
 
 /**
  * 60 : 1h

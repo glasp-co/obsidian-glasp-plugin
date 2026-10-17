@@ -19,11 +19,26 @@ export type LastUpdatedKey =
 
 /**
  * Hard safety cap on the number of pages fetched in a single run. It bounds a
- * run to ~50k items and, more importantly, guarantees termination even if the
+ * run to ~47k items and, more importantly, guarantees termination even if the
  * server ever returns a non-advancing cursor (which would otherwise loop
- * forever and grow memory without bound).
+ * forever and grow memory without bound). It stays below the API's 1,000
+ * requests a day per endpoint, so a long run is not refused at its last pages
+ * because of a few other requests that day.
  */
-const MAX_PAGES = 1000;
+const MAX_PAGES = 950;
+
+/**
+ * Tries per page. A page whose request fails on the way (no answer, a
+ * connection error, a server error) is asked for again, since one failed page
+ * fails the whole fetch and a large one would otherwise never finish.
+ */
+const PAGE_ATTEMPTS = 3;
+
+const isTransientError = (e: unknown): boolean =>
+	e instanceof APIError && (e.status === 0 || e.status >= 500);
+
+const sleep = (ms: number): Promise<void> =>
+	new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * How many note writes to run concurrently. Bounds memory and file-system
@@ -43,13 +58,66 @@ const CREATE_ATTEMPTS = 5;
 const PAGE_REQUEST_INTERVAL_MS = 650;
 
 /**
- * How far before the start of a fetch the saved cursor goes. The server can
- * answer a repeated page from a short-lived cache, and the device clock that
- * stamps the cursor can run ahead of the server's; either could otherwise
- * skip an item changed just before the run. Fetching such an item again costs
- * no write.
+ * How far behind the newest item fetched the saved cursor stays. A writer can
+ * stamp a change a little in the past (glasp.co stamps some with the browser's
+ * clock), and the server can answer a repeated page from a short-lived cache;
+ * either could otherwise skip a change. The items fetched again because of it
+ * are remembered (see `writtenAhead`) and left alone when they come back
+ * unchanged.
  */
 const CURSOR_SAFETY_MARGIN_MS = 10 * 60 * 1000;
+
+/** At most this many items per source are remembered as written ahead of the cursor. */
+const MAX_WRITTEN_AHEAD = 2000;
+
+/**
+ * The items written (URL → `updated_at`) that the next sync fetches again,
+ * those newer than `cursorMs` (all of them for an empty cursor), newest first.
+ */
+const writtenAheadOf = (
+	before: Readonly<Record<string, string>>,
+	written: ReadonlyMap<string, string>,
+	cursorMs: number,
+): Record<string, string> => {
+	const merged = new Map<string, string>(Object.entries(before));
+	for (const [url, at] of written) {
+		merged.set(url, at);
+	}
+	const kept = [...merged].filter(
+		([, version]) => Number.isNaN(cursorMs) || versionTime(version) > cursorMs,
+	);
+	kept.sort((a, b) => versionTime(b[1]) - versionTime(a[1]));
+	return Object.fromEntries(kept.slice(0, MAX_WRITTEN_AHEAD));
+};
+
+/**
+ * An item's version as remembered: its `updated_at` and a hash of what the
+ * API sent, since a change does not always move `updated_at` (a Kindle book
+ * is stamped with the day of its latest annotation).
+ */
+const versionOf = (item: Item): string => {
+	const text = JSON.stringify(item);
+	let hash = 0x811c9dc5;
+	for (let i = 0; i < text.length; i++) {
+		hash ^= text.charCodeAt(i);
+		hash = Math.imul(hash, 0x01000193);
+	}
+	return `${String(item.updated_at ?? "")}#${(hash >>> 0).toString(36)}`;
+};
+
+/** The `updated_at` part of a remembered version, in ms. */
+const versionTime = (version: string): number =>
+	Date.parse(version.split("#")[0]);
+
+const sameEntries = (
+	a: Readonly<Record<string, string>>,
+	b: Readonly<Record<string, string>>,
+): boolean => {
+	const keys = Object.keys(a);
+	return (
+		keys.length === Object.keys(b).length && keys.every((k) => a[k] === b[k])
+	);
+};
 
 /**
  * Frontmatter key used to stamp which Glasp source produced a note. Lets the
@@ -113,7 +181,12 @@ export type SourceResult = SourceCounts & { failures: SyncFailure[] };
 export type RunOptions = { backfill?: boolean; unmarkedFolders?: string[] };
 
 /** A cursor as a run read it when it started. */
-export type CursorRead = { value: string; generation: number };
+export type CursorRead = {
+	value: string;
+	generation: number;
+	/** Items written ahead of the cursor, URL → version (see `writtenAhead`). */
+	written: Readonly<Record<string, string>>;
+};
 
 /**
  * Read and commit a source's sync cursor. `generation` changes when a setting
@@ -128,6 +201,7 @@ export type CursorStore = {
 		key: LastUpdatedKey,
 		value: string,
 		read: CursorRead,
+		written: Record<string, string>,
 	) => Promise<boolean>;
 };
 
@@ -136,7 +210,9 @@ export type NoteVault = Pick<
 	| "getAllFiles"
 	| "getFileMetadataCache"
 	| "readFrontmatter"
-	| "exists"
+	| "frontmatterAtPath"
+	| "frontmatterOf"
+	| "isSameFile"
 	| "resolveFolder"
 	| "pathTakenChecker"
 	| "render"
@@ -278,10 +354,19 @@ export class ImportHighlights {
 		const existingFolder = this.obApp.resolveFolder(configured);
 		const folder = existingFolder ?? configured;
 		const source = { ...input, folder };
-		// Web or Kindle notes in this folder (or below it) carry no marker either.
+		// Web or Kindle notes in this folder (or below it) carry no marker either,
+		// so there only a note with this source's marker counts as its own;
+		// unless its template writes no marker, and then an unmarked note is all
+		// its own notes can be.
 		const ownKey = pathKey(folder);
-		const sharedWithUnmarked =
+		const writesMarker =
 			!!source.sourceType &&
+			new RegExp(
+				`^${SOURCE_TYPE_KEY}:[ \t]*["']?${source.sourceType}["']?[ \t]*\r?$`,
+				"m",
+			).test(source.template);
+		const sharedWithUnmarked =
+			writesMarker &&
 			unmarkedFolders.some((other) => {
 				const key = pathKey(normalizeFolder(other));
 				return !!key && (key === ownKey || key.startsWith(`${ownKey}/`));
@@ -334,6 +419,8 @@ export class ImportHighlights {
 		// The oldest `updated_at` among the items that failed (null when one of
 		// them has none we can read); +Infinity when none failed.
 		let firstFailedAt: number | null = Number.POSITIVE_INFINITY;
+		// Items written or found up to date in this run, URL → `updated_at`.
+		const written = new Map<string, string>();
 		if (items.length) {
 			try {
 				firstFailedAt = await this.writeItems(
@@ -342,46 +429,60 @@ export class ImportHighlights {
 					result,
 					backfill,
 					!sharedWithUnmarked,
+					backfill ? {} : cursor.written,
+					written,
 				);
 			} catch (e) {
 				sourceFailure("unexpected", describeError(e));
 			}
 		}
-		if (
-			backfill ||
-			this.isCancelled() ||
-			holdCursor ||
-			firstFailedAt === null
-		) {
+		if (backfill || this.isCancelled() || holdCursor) {
 			return result;
 		}
 		const previous = Date.parse(cursor.value);
 		// A cursor later than now (a device clock that ran ahead) would make the
 		// server return nothing ever again, so it is always replaced.
 		const fromTheFuture = !Number.isNaN(previous) && previous > startedAt;
-		if (!items.length && !fromTheFuture) {
-			// Nothing fetched: nothing to move past, and no write to make.
-			return result;
-		}
 
-		// No failure: the next run fetches what changed after this one started.
-		// Failures: up to just before the oldest item that failed. Every older
-		// item was written, and the server filters on the same `updated_at`
-		// (strictly after the cursor, in milliseconds), so the failed items and
-		// everything after them come back next time, and progress is kept.
-		let commitAt = startedAt - CURSOR_SAFETY_MARGIN_MS;
-		if (firstFailedAt !== Number.POSITIVE_INFINITY) {
-			commitAt = Math.min(commitAt, firstFailedAt - 1);
+		// No failure: the safety margin before this device's clock, but never
+		// past the newest item fetched (its `updated_at`), so a large batch of
+		// changes made long ago is not fetched again on every sync while a device
+		// clock that runs ahead skips nothing. Failures: up to just before the
+		// oldest item that failed. Every
+		// older item was written, so the failed items and everything after them
+		// come back next time, and progress is kept. An item whose time cannot
+		// be read keeps the cursor where it is. The cursor never moves back,
+		// except that a cursor later than now is replaced.
+		let next = cursor.value;
+		if (firstFailedAt !== null && (items.length || fromTheFuture)) {
+			let newest = Number.NEGATIVE_INFINITY;
+			for (const item of items) {
+				const at = updatedAtMs(item);
+				if (at > newest) {
+					newest = at;
+				}
+			}
+			let commitAt =
+				fromTheFuture || !Number.isFinite(newest)
+					? startedAt - CURSOR_SAFETY_MARGIN_MS
+					: Math.min(newest - 1, startedAt - CURSOR_SAFETY_MARGIN_MS);
+			if (firstFailedAt !== Number.POSITIVE_INFINITY) {
+				commitAt = Math.min(commitAt, firstFailedAt - 1);
+			}
+			if (Number.isNaN(previous) || commitAt > previous || fromTheFuture) {
+				next = new Date(commitAt).toISOString();
+			}
 		}
-		if (!Number.isNaN(previous) && commitAt <= previous && !fromTheFuture) {
+		// The next sync fetches again every item newer than the cursor; those it
+		// finds unchanged are left alone, so a note edited, moved or deleted
+		// since is not rewritten, copied or brought back.
+		const ahead = writtenAheadOf(cursor.written, written, Date.parse(next));
+		if (next === cursor.value && sameEntries(ahead, cursor.written)) {
+			// Nothing to move past and nothing new to remember: no write.
 			return result;
 		}
 		try {
-			await this.cursors.commit(
-				source.lastUpdatedKey,
-				new Date(commitAt).toISOString(),
-				cursor,
-			);
+			await this.cursors.commit(source.lastUpdatedKey, next, cursor, ahead);
 		} catch (e) {
 			if (!this.isCancelled()) {
 				result.failures.push({
@@ -420,7 +521,25 @@ export class ImportHighlights {
 				break;
 			}
 			await pacer.turn();
-			const response = await fetchPage({ pageCursor, updatedAfter });
+			let response: Awaited<ReturnType<typeof fetchPage>>;
+			for (let attempt = 1; ; attempt++) {
+				try {
+					response = await fetchPage({ pageCursor, updatedAfter });
+					break;
+				} catch (e) {
+					if (
+						attempt >= PAGE_ATTEMPTS ||
+						!isTransientError(e) ||
+						this.isCancelled()
+					) {
+						throw e;
+					}
+					await sleep(this.pageIntervalMs * 3 * attempt);
+					if (this.isCancelled()) {
+						throw e;
+					}
+				}
+			}
 
 			const results = response.results ?? [];
 			items.push(...results);
@@ -449,15 +568,26 @@ export class ImportHighlights {
 		result: SourceResult,
 		backfill: boolean,
 		looseOwnFolder: boolean,
+		alreadyWritten: Readonly<Record<string, string>>,
+		written: Map<string, string>,
 	): Promise<number | null> {
 		let firstFailedAt: number | null = Number.POSITIVE_INFINITY;
 		let contentSkipped = 0;
+		// An item that failed at any stage (e.g. a new summary written without
+		// its content) is not remembered, so the next sync tries it again.
+		const failedUrls = new Set<string>();
+		const wrote = (item: Item) => {
+			if (!failedUrls.has(item.url)) {
+				written.set(item.url, versionOf(item));
+			}
+		};
 		const fail = (
 			item: Item,
 			stage: FailureStage,
 			e: unknown,
 			path?: string,
 		) => {
+			failedUrls.add(item.url);
 			result.failed++;
 			const at = updatedAtMs(item);
 			if (Number.isNaN(at)) {
@@ -475,7 +605,7 @@ export class ImportHighlights {
 				source: source.label,
 				stage,
 				message:
-					stage === "normalize" && /Invalid time value/.test(message)
+					stage === "normalize" && /Invalid (time value|Date)/.test(message)
 						? "Its date from Glasp could not be read (Invalid time value)."
 						: message,
 				title: String(item.title ?? ""),
@@ -506,6 +636,18 @@ export class ImportHighlights {
 			{ vaultWide: backfill, looseOwnFolder },
 		);
 		let candidates = [...byUrl.values()];
+		// Written by this device's last sync and unchanged since: left alone,
+		// whatever has happened to its note.
+		const fresh = candidates.filter((item) => {
+			const version = versionOf(item);
+			if (alreadyWritten[item.url] !== version) {
+				return true;
+			}
+			written.set(item.url, version);
+			return false;
+		});
+		result.unchanged += candidates.length - fresh.length;
+		candidates = fresh;
 		if (backfill) {
 			// Only items without a note of their own anywhere in the vault (a note
 			// may have been moved out of the output folder); the others are left
@@ -575,6 +717,20 @@ export class ImportHighlights {
 					planned.push({ kind: "update", item, file: existing, content });
 					continue;
 				}
+				if (backfill) {
+					// A note the next click could not find would be created again by
+					// every click.
+					const problem = this.readBackProblem(
+						content,
+						item.url,
+						source.sourceType,
+						looseOwnFolder,
+					);
+					if (problem) {
+						fail(item, "create", new Error(problem));
+						continue;
+					}
+				}
 				try {
 					const title = String(
 						(source.filename ? source.filename(resolved) : resolved.title) ??
@@ -596,16 +752,17 @@ export class ImportHighlights {
 					}
 					if (plan.kind === "update") {
 						try {
-							const written = await this.obApp.updateFile(
+							const rewritten = await this.obApp.updateFile(
 								plan.file,
 								plan.content,
 								source.label,
 							);
-							if (written) {
+							if (rewritten) {
 								result.updated++;
 							} else {
 								result.unchanged++;
 							}
+							wrote(plan.item);
 						} catch (e) {
 							fail(plan.item, "update", e, plan.file.path);
 						}
@@ -616,6 +773,7 @@ export class ImportHighlights {
 							source.folder,
 							plan,
 							reserver,
+							source.sourceType,
 						);
 						// Guard against a later item resolving to the same URL/path, and
 						// against the next pass not seeing it before Obsidian indexes it.
@@ -624,6 +782,7 @@ export class ImportHighlights {
 							created.set(plan.item.url, file);
 						}
 						result.created++;
+						wrote(plan.item);
 					} catch (e) {
 						const path = e instanceof CreateError ? e.path : plan.path;
 						fail(
@@ -642,8 +801,8 @@ export class ImportHighlights {
 				source: source.label,
 				stage: "hydrate",
 				message: backfill
-					? `${contentSkipped} summaries were not created because Glasp's request limit for full page content was reached. Run Create missing notes again later (for example tomorrow) to create them.`
-					: `Full page content was not downloaded for ${contentSkipped} summaries because Glasp's request limit was reached. They are fetched on the next syncs, oldest first.`,
+					? `${contentSkipped === 1 ? "1 summary was" : `${contentSkipped} summaries were`} not created because Glasp's request limit for full page content was reached. Run Create missing notes again later (for example tomorrow) to create them.`
+					: `Full page content was not downloaded for ${contentSkipped === 1 ? "1 summary" : `${contentSkipped} summaries`} because Glasp's request limit was reached. They are fetched on the next syncs, oldest first.`,
 			});
 		}
 		return firstFailedAt;
@@ -658,6 +817,7 @@ export class ImportHighlights {
 		folder: string,
 		plan: Extract<Planned, { kind: "create" }>,
 		reserver: PathReserver,
+		sourceType: string | undefined,
 	): Promise<TFile> {
 		let path = plan.path;
 		let name = plan.name;
@@ -670,6 +830,16 @@ export class ImportHighlights {
 					throw new CreateError(path, e);
 				}
 				if (isAlreadyExists(e)) {
+					// This item's own note, appeared since the index was built (synced
+					// in from another device, say): matched next time, not copied.
+					if (await this.isOwnNoteAt(path, plan.item.url, sourceType)) {
+						throw new CreateError(
+							path,
+							new Error(
+								"A note for this item appeared here during the sync (for example from another device); it is matched on the next sync.",
+							),
+						);
+					}
 					path = reserver.reserve(folder, name);
 					continue;
 				}
@@ -682,6 +852,46 @@ export class ImportHighlights {
 				throw new CreateError(path, e);
 			}
 		}
+	}
+
+	/** Whether the file at `path` is a note of this source for `url`. */
+	private async isOwnNoteAt(
+		path: string,
+		url: string,
+		sourceType: string | undefined,
+	): Promise<boolean> {
+		const frontmatter = await this.obApp.frontmatterAtPath(path);
+		if (frontmatter?.URL !== url) {
+			return false;
+		}
+		const marker = frontmatter[SOURCE_TYPE_KEY];
+		return sourceType
+			? marker === sourceType
+			: !(typeof marker === "string" && MARKED_SOURCES.has(marker));
+	}
+
+	/**
+	 * Why the next Create missing notes could not find a note with this content
+	 * (so it would create it again on every click), or null.
+	 */
+	private readBackProblem(
+		content: string,
+		url: string,
+		sourceType: string | undefined,
+		looseOwnFolder: boolean,
+	): string | null {
+		const frontmatter = this.obApp.frontmatterOf(content);
+		if (frontmatter?.URL !== url) {
+			return "Its template does not write the item's URL as `URL:` in the frontmatter, so the note could not be found again; Create missing notes did not create it.";
+		}
+		if (
+			sourceType &&
+			frontmatter[SOURCE_TYPE_KEY] !== sourceType &&
+			!looseOwnFolder
+		) {
+			return `Its template leaves out the \`Glasp: ${sourceType}\` line, which a folder shared with web or Kindle notes needs to find the note again; Create missing notes did not create it.`;
+		}
+		return null;
 	}
 
 	/**
@@ -711,10 +921,15 @@ export class ImportHighlights {
 			// indexed yet (just synced in or just created), or frontmatter it
 			// cannot parse (0.3.0 wrote some, e.g. for a tag with a comma). The
 			// note is then updated in place, which also repairs it. Elsewhere in
-			// the vault only what Obsidian has indexed is used.
+			// the vault only what Obsidian has indexed is used, and a note read
+			// directly only when it starts with frontmatter Obsidian could not
+			// parse (Obsidian then lists a "yaml" section but no frontmatter).
+			const cache = this.obApp.getFileMetadataCache(file);
 			const frontmatter =
-				this.obApp.getFileMetadataCache(file)?.frontmatter ??
-				(inFolder ? await this.obApp.readFrontmatter(file) : null);
+				cache?.frontmatter ??
+				(inFolder || cache?.sections?.[0]?.type === "yaml"
+					? await this.obApp.readFrontmatter(file)
+					: null);
 			const marker = frontmatter?.[SOURCE_TYPE_KEY];
 			const url = frontmatter?.URL;
 			if (typeof url !== "string" || !url) {
@@ -740,7 +955,7 @@ export class ImportHighlights {
 			if (
 				!index.has(url) &&
 				file.path.startsWith(prefix) &&
-				this.obApp.exists(file.path)
+				this.obApp.isSameFile(file)
 			) {
 				index.set(url, file);
 				anyNote.add(url);

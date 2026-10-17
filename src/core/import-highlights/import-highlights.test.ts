@@ -53,25 +53,47 @@ const item = (
 const rendered = (h: UserHighlight) =>
 	renderTemplate(HIGHLIGHT_TEMPLATE, normalizeHighlight(h));
 
+/** The web template, stamped the way the summaries template stamps its notes. */
+const SUMMARY_LIKE_TEMPLATE = HIGHLIGHT_TEMPLATE.replace(
+	"---\n",
+	"---\nGlasp: summary\n",
+);
+
 const cursors = (initial: Partial<Record<LastUpdatedKey, string>> = {}) => {
 	const state: Record<string, string> = { ...initial };
 	const generations: Record<string, number> = {};
+	const written: Record<string, Record<string, string>> = {};
 	const store: CursorStore = {
 		read: (key) => ({
 			value: state[key] ?? "",
 			generation: generations[key] ?? 0,
+			written: written[key] ?? {},
 		}),
 		// As the plugin does it: only if neither the generation nor the cursor
 		// changed since the run read them.
-		commit: async (key, value, read) => {
+		commit: async (key, value, read, ahead) => {
 			if ((generations[key] ?? 0) !== read.generation) return false;
 			if ((state[key] ?? "") !== read.value) return false;
 			state[key] = value;
+			written[key] = ahead;
 			return true;
 		},
 	};
-	return { store, state, generations };
+	return { store, state, generations, written };
 };
+
+/** A server that filters on `updated_at` like Glasp's. */
+const serving = (all: UserHighlight[]) => ({
+	fetchPage: async ({ updatedAfter }: { updatedAfter?: string }) => ({
+		results: all
+			.filter(
+				(h) =>
+					!updatedAfter || Date.parse(h.updated_at) > Date.parse(updatedAfter),
+			)
+			.sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at)),
+		nextPageCursor: null,
+	}),
+});
 
 const source = (
 	items: UserHighlight[],
@@ -535,7 +557,7 @@ describe("ImportHighlights.run", () => {
 		expect(c.state.lastUpdated).toBe("2026-09-23T00:00:00.000Z");
 	});
 
-	test("the cursor saved is the time the fetch started", async () => {
+	test("the cursor saved is never later than when the fetch started", async () => {
 		const vault = new FakeVault([FOLDER]);
 		const c = cursors();
 		let fetchedAt = "";
@@ -617,15 +639,61 @@ describe("ImportHighlights.run", () => {
 		expect(turn).toHaveBeenCalledTimes(3);
 	});
 
-	test("with no failure, the cursor is the fetch's start minus a safety margin", async () => {
+	test("with no failure, the cursor is just before the newest item, or the margin before the device's clock when that is earlier", async () => {
 		const vault = new FakeVault([FOLDER]);
 		const c = cursors();
+		await importer(vault, c.store).run(
+			source([
+				item(1, { updated_at: "2026-09-24T10:00:00.000Z" }),
+				item(2, { updated_at: "2026-09-25T08:00:00.000Z" }),
+			]).src,
+		);
+		expect(c.state.lastUpdated).toBe("2026-09-25T07:59:59.999Z");
+
+		const d = cursors();
+		const ahead = new Date(Date.now() + 60 * 60 * 1000).toISOString();
 		const before = Date.now();
-		await importer(vault, c.store).run(source([item(1)]).src);
-		const after = Date.now();
-		const saved = Date.parse(c.state.lastUpdated);
-		expect(saved).toBeGreaterThanOrEqual(before - 10 * 60 * 1000);
-		expect(saved).toBeLessThanOrEqual(after - 10 * 60 * 1000);
+		await importer(vault, d.store).run(
+			source([item(3, { updated_at: ahead })]).src,
+		);
+		const margin = 10 * 60 * 1000;
+		expect(Date.parse(d.state.lastUpdated)).toBeGreaterThanOrEqual(
+			before - margin,
+		);
+		expect(Date.parse(d.state.lastUpdated)).toBeLessThanOrEqual(
+			Date.now() - margin,
+		);
+	});
+
+	test("a note edited after a sync is left alone by the next one when nothing changed on Glasp", async () => {
+		// Changed on Glasp two minutes before the first sync.
+		const all = [
+			item(1, {
+				updated_at: new Date(Date.now() - 2 * 60 * 1000).toISOString(),
+			}),
+		];
+		const fetchPage = async ({ updatedAfter }: { updatedAfter?: string }) => ({
+			results: all.filter(
+				(h) =>
+					!updatedAfter || Date.parse(h.updated_at) > Date.parse(updatedAfter),
+			),
+			nextPageCursor: null,
+		});
+		const vault = new FakeVault([FOLDER]);
+		const c = cursors();
+		const { src } = source([], { fetchPage });
+		await importer(vault, c.store).run(src);
+		const note = vault.files.get(`${FOLDER}/Page 1.md`);
+		if (!note) throw new Error("no note");
+		note.content += "\n## My thoughts\n";
+
+		const second = await importer(vault, c.store).run(src);
+
+		// Fetched again (the cursor keeps a margin), and left alone.
+		expect(second).toMatchObject({ fetched: 1, updated: 0, unchanged: 1 });
+		expect(vault.files.get(`${FOLDER}/Page 1.md`)?.content).toContain(
+			"My thoughts",
+		);
 	});
 
 	test("items are written oldest first, and the cursor stops just before the oldest failure", async () => {
@@ -697,9 +765,7 @@ describe("ImportHighlights.run", () => {
 		const day2 = await importer(vault, c.store).run(src);
 		expect(day2).toMatchObject({ fetched: 3, updated: 3, failed: 0 });
 		expect(withContent.size).toBe(8);
-		expect(Date.parse(c.state.lastUpdated)).toBeGreaterThan(
-			Date.parse("2026-10-01"),
-		);
+		expect(c.state.lastUpdated).toBe("2026-09-08T09:59:59.999Z");
 	});
 
 	test("a short page does not end the fetch while the server gives a next page", async () => {
@@ -867,6 +933,17 @@ describe("ImportHighlights.run", () => {
 		expect(result.failures[0].message).toMatch(
 			/date from Glasp could not be read/,
 		);
+		// The same error as Safari words it (Obsidian for iOS).
+		const ios = await importer(vault, cursors().store).run(
+			source([item(2)], {
+				normalize: () => {
+					throw new RangeError("Invalid Date");
+				},
+			}).src,
+		);
+		expect(ios.failures[0].message).toMatch(
+			/date from Glasp could not be read/,
+		);
 	});
 
 	test("a user's own `Glasp:` key in a web template does not hide the notes", async () => {
@@ -967,17 +1044,14 @@ describe("ImportHighlights.run", () => {
 
 	test("the cursor never moves back", async () => {
 		const vault = new FakeVault([FOLDER]);
-		// Left by a run that stopped just before an item changed a minute ago.
-		const previous = new Date(Date.now() - 60 * 1000).toISOString();
-		const c = cursors({ lastUpdated: previous });
-		const changed = item(1, {
-			updated_at: new Date(Date.now() - 30 * 1000).toISOString(),
-		});
-
-		const result = await importer(vault, c.store).run(source([changed]).src);
+		const c = cursors({ lastUpdated: "2026-09-30T00:00:00.000Z" });
+		// A server that answers with an item older than the cursor.
+		const result = await importer(vault, c.store).run(
+			source([item(1, { updated_at: "2026-09-24T10:00:00.000Z" })]).src,
+		);
 
 		expect(result).toMatchObject({ created: 1, failed: 0 });
-		expect(c.state.lastUpdated).toBe(previous);
+		expect(c.state.lastUpdated).toBe("2026-09-30T00:00:00.000Z");
 	});
 
 	test("create missing notes gives a page its web note beside its summary note", async () => {
@@ -1028,7 +1102,10 @@ describe("ImportHighlights.run", () => {
 	test("create missing notes gives a summary its note in a folder shared with web highlights", async () => {
 		const vault = new FakeVault([FOLDER]);
 		vault.seed(`${FOLDER}/Page 1.md`, rendered(item(1)));
-		const { src } = source([item(1)], { sourceType: "summary" });
+		const { src } = source([item(1)], {
+			sourceType: "summary",
+			template: SUMMARY_LIKE_TEMPLATE,
+		});
 
 		const result = await importer(vault, cursors().store).run(src, {
 			backfill: true,
@@ -1044,7 +1121,10 @@ describe("ImportHighlights.run", () => {
 	test("create missing notes gives a summary its note when web highlights are in a folder below", async () => {
 		const vault = new FakeVault([FOLDER, `${FOLDER}/Web`]);
 		vault.seed(`${FOLDER}/Web/Page 1.md`, rendered(item(1)));
-		const { src } = source([item(1)], { sourceType: "summary" });
+		const { src } = source([item(1)], {
+			sourceType: "summary",
+			template: SUMMARY_LIKE_TEMPLATE,
+		});
 
 		const result = await importer(vault, cursors().store).run(src, {
 			backfill: true,
@@ -1052,5 +1132,397 @@ describe("ImportHighlights.run", () => {
 		});
 
 		expect(result).toMatchObject({ created: 1, unchanged: 0 });
+	});
+
+	test("a note this session created, then deleted and replaced by the user, is not written over", async () => {
+		const vault = new FakeVault([FOLDER]);
+		const session = new Map();
+		const run = () =>
+			new ImportHighlights({
+				pageIntervalMs: 0,
+				obApp: new ObsidianApp(vault.app()),
+				cursors: cursors().store,
+				notify: () => {},
+				sessionNotes: () => session,
+			});
+		await run().run(source([item(1)]).src);
+		const path = `${FOLDER}/Page 1.md`;
+		vault.files.delete(path);
+		vault.seed(path, "my own essay\n");
+
+		await run().run(source([item(1, { document_note: "a new note" })]).src);
+
+		expect(vault.files.get(path)?.content).toBe("my own essay\n");
+		expect(vault.files.has(`${FOLDER}/Page 1 (2).md`)).toBe(true);
+	});
+
+	test("a note replaced by another one during the sync is left alone", async () => {
+		const vault = new FakeVault([FOLDER]);
+		const path = `${FOLDER}/Page 1.md`;
+		vault.seed(path, rendered(item(1)));
+		const { src } = source([item(1, { document_note: "a new note" })], {
+			hydrate: async (h) => {
+				// While the sync runs, the user deletes the note and writes their own.
+				vault.files.delete(path);
+				vault.seed(path, "someone else's note\n");
+				return h;
+			},
+		});
+
+		const result = await importer(vault, cursors().store).run(src);
+
+		expect(vault.files.get(path)?.content).toBe("someone else's note\n");
+		expect(result.failures[0]).toMatchObject({
+			stage: "update",
+			message: expect.stringMatching(/took this note's place/),
+		});
+	});
+
+	test("a note for the same item that appears while it is created is not copied under another name", async () => {
+		const vault = new FakeVault([FOLDER]);
+		const obApp = new ObsidianApp(vault.app());
+		const create = obApp.createFileAt.bind(obApp);
+		vi.spyOn(obApp, "createFileAt").mockImplementationOnce(
+			async (path, content) => {
+				// Another device's copy of the same note arrives first.
+				vault.seed(path, content);
+				return create(path, content);
+			},
+		);
+		const c = cursors({ lastUpdated: "2026-09-01T00:00:00.000Z" });
+
+		const result = await new ImportHighlights({
+			pageIntervalMs: 0,
+			obApp,
+			cursors: c.store,
+			notify: () => {},
+		}).run(source([item(1)]).src);
+
+		expect([...vault.files.keys()]).toEqual([`${FOLDER}/Page 1.md`]);
+		expect(result).toMatchObject({ created: 0, failed: 1 });
+		expect(c.state.lastUpdated).toBe("2026-09-24T09:59:59.999Z");
+	});
+
+	test("another page's note that appears while a note is created still moves it to the next name", async () => {
+		const vault = new FakeVault([FOLDER]);
+		const obApp = new ObsidianApp(vault.app());
+		const create = obApp.createFileAt.bind(obApp);
+		vi.spyOn(obApp, "createFileAt").mockImplementationOnce(
+			async (path, content) => {
+				vault.seed(path, rendered(item(7, { title: "Page 1" })));
+				return create(path, content);
+			},
+		);
+
+		const result = await new ImportHighlights({
+			pageIntervalMs: 0,
+			obApp,
+			cursors: cursors().store,
+			notify: () => {},
+		}).run(source([item(1)]).src);
+
+		expect(result).toMatchObject({ created: 1, failed: 0 });
+		expect(vault.files.has(`${FOLDER}/Page 1 (2).md`)).toBe(true);
+	});
+
+	test("create missing notes creates nothing its template would not let it find again", async () => {
+		const vault = new FakeVault([FOLDER]);
+		const { src } = source([item(1)], {
+			template: "---\nSource: {{url}}\n---\n{{content}}\n",
+		});
+
+		const result = await importer(vault, cursors().store).run(src, {
+			backfill: true,
+		});
+
+		expect(vault.created).toEqual([]);
+		expect(result.failures[0].message).toMatch(/does not write the item's URL/);
+		// A normal sync still creates it, as before.
+		const normal = await importer(vault, cursors().store).run(src);
+		expect(normal.created).toBe(1);
+	});
+
+	test("in a folder shared with web highlights, a summaries template without its Glasp line never makes Create missing notes copy notes", async () => {
+		const vault = new FakeVault([FOLDER]);
+		vault.seed(`${FOLDER}/Page 2.md`, rendered(item(2)));
+		// The web template stands in for a custom summaries template with no `Glasp:` line.
+		const { src } = source([item(1), item(2)], { sourceType: "summary" });
+		const run = () =>
+			importer(vault, cursors().store).run(src, {
+				backfill: true,
+				unmarkedFolders: [FOLDER],
+			});
+
+		expect(await run()).toMatchObject({ created: 1, unchanged: 1 });
+		expect(await run()).toMatchObject({ created: 0, unchanged: 2 });
+	});
+
+	test("create missing notes reads a moved note whose frontmatter Obsidian could not parse", async () => {
+		const vault = new FakeVault([FOLDER, "Archive"]);
+		vault.seed("Archive/Page 1.md", rendered(item(1)));
+		vault.unparsable.add("Archive/Page 1.md");
+
+		const result = await importer(vault, cursors().store).run(
+			source([item(1)]).src,
+			{ backfill: true },
+		);
+
+		expect(result).toMatchObject({ created: 0, unchanged: 1 });
+	});
+
+	test("create missing notes leaves the cursor even when it fetches something newer", async () => {
+		const vault = new FakeVault([FOLDER]);
+		vault.seed(`${FOLDER}/Page 1.md`, rendered(item(1)));
+		const c = cursors({ lastUpdated: "2026-09-20T00:00:00.000Z" });
+		// Changed on Glasp after the cursor; the next normal sync updates its note.
+		const changed = item(1, { document_note: "changed since the last sync" });
+
+		const result = await importer(vault, c.store).run(source([changed]).src, {
+			backfill: true,
+		});
+
+		expect(result).toMatchObject({ created: 0, unchanged: 1 });
+		expect(c.state.lastUpdated).toBe("2026-09-20T00:00:00.000Z");
+	});
+
+	test("a page whose request fails on the way is asked for again", async () => {
+		const vault = new FakeVault([FOLDER]);
+		const c = cursors();
+		const fetchPage = vi
+			.fn()
+			.mockRejectedValueOnce(new APIError({ status: 0, message: "offline" }))
+			.mockResolvedValueOnce({ results: [item(1)], nextPageCursor: null });
+		const { src } = source([], { fetchPage });
+
+		const result = await importer(vault, c.store).run(src);
+
+		expect(fetchPage).toHaveBeenCalledTimes(2);
+		expect(result).toMatchObject({ created: 1, failures: [] });
+	});
+
+	test("a page refused for the API's request limit is not asked for again", async () => {
+		const vault = new FakeVault([FOLDER]);
+		const c = cursors({ lastUpdated: "2026-09-01T00:00:00.000Z" });
+		const fetchPage = vi.fn().mockRejectedValue(new APIError({ status: 429 }));
+		const { src } = source([], { fetchPage });
+
+		const result = await importer(vault, c.store).run(src);
+
+		expect(fetchPage).toHaveBeenCalledTimes(1);
+		expect(result.failures[0]).toMatchObject({ stage: "fetch" });
+		expect(c.state.lastUpdated).toBe("2026-09-01T00:00:00.000Z");
+	});
+
+	test("a page that fails three times fails the fetch and keeps the cursor", async () => {
+		const vault = new FakeVault([FOLDER]);
+		const c = cursors({ lastUpdated: "2026-09-01T00:00:00.000Z" });
+		const fetchPage = vi.fn().mockRejectedValue(new APIError({ status: 503 }));
+		const { src } = source([], { fetchPage });
+
+		const result = await importer(vault, c.store).run(src);
+
+		expect(fetchPage).toHaveBeenCalledTimes(3);
+		expect(result.failures[0]).toMatchObject({ stage: "fetch" });
+		expect(c.state.lastUpdated).toBe("2026-09-01T00:00:00.000Z");
+		expect(vault.created).toEqual([]);
+	});
+
+	test("an item the next sync fetches again unchanged is left alone, even if its note was deleted or moved", async () => {
+		const at = new Date(Date.now() - 60 * 1000).toISOString();
+		const { fetchPage } = serving([
+			item(1, { updated_at: at }),
+			item(2, { updated_at: at }),
+		]);
+		const vault = new FakeVault([FOLDER, "Archive"]);
+		const c = cursors();
+		const { src } = source([], { fetchPage });
+		await importer(vault, c.store).run(src);
+		// Within the margin, so the next sync fetches both again.
+		expect(Date.parse(c.state.lastUpdated)).toBeLessThan(Date.parse(at));
+		vault.files.delete(`${FOLDER}/Page 1.md`);
+		const moved = vault.files.get(`${FOLDER}/Page 2.md`);
+		if (!moved) throw new Error("no note");
+		vault.files.delete(`${FOLDER}/Page 2.md`);
+		vault.seed("Archive/Page 2.md", moved.content);
+
+		const second = await importer(vault, c.store).run(src);
+
+		expect(second).toMatchObject({ fetched: 2, created: 0, unchanged: 2 });
+		expect(vault.files.has(`${FOLDER}/Page 1.md`)).toBe(false);
+		expect(vault.files.has(`${FOLDER}/Page 2.md`)).toBe(false);
+	});
+
+	test("an item that changes again is written again", async () => {
+		const all = [
+			item(1, { updated_at: new Date(Date.now() - 60 * 1000).toISOString() }),
+		];
+		const { fetchPage } = serving(all);
+		const vault = new FakeVault([FOLDER]);
+		const c = cursors();
+		const { src } = source([], { fetchPage });
+		await importer(vault, c.store).run(src);
+		all[0] = item(1, {
+			updated_at: new Date(Date.now() - 1000).toISOString(),
+			document_note: "changed on Glasp",
+		});
+
+		const second = await importer(vault, c.store).run(src);
+
+		expect(second).toMatchObject({ updated: 1 });
+	});
+
+	test("create missing notes does not go by what the last sync remembered", async () => {
+		const { fetchPage } = serving([
+			item(1, { updated_at: new Date(Date.now() - 60 * 1000).toISOString() }),
+		]);
+		const vault = new FakeVault([FOLDER]);
+		const c = cursors();
+		const { src } = source([], { fetchPage });
+		await importer(vault, c.store).run(src);
+		vault.files.delete(`${FOLDER}/Page 1.md`);
+
+		const result = await importer(vault, c.store).run(src, { backfill: true });
+
+		expect(result.created).toBe(1);
+	});
+
+	test("what was written is remembered even when a failure holds the cursor", async () => {
+		const at = "2026-09-24T10:00:00.000Z";
+		const { fetchPage } = serving([
+			item(1, { updated_at: at }),
+			item(2, { updated_at: "2026-09-23T10:00:00.000Z" }),
+		]);
+		const vault = new FakeVault([FOLDER]);
+		const c = cursors({ lastUpdated: "2026-09-01T00:00:00.000Z" });
+		const { src } = source([], {
+			fetchPage,
+			normalize: (h) => {
+				if (h.id === "id2") throw new Error("not readable");
+				return normalizeHighlight(h);
+			},
+		});
+		await importer(vault, c.store).run(src);
+		expect(c.state.lastUpdated).toBe("2026-09-23T09:59:59.999Z");
+		expect(Object.keys(c.written.lastUpdated)).toEqual([
+			"https://example.com/1",
+		]);
+		expect(c.written.lastUpdated["https://example.com/1"]).toMatch(
+			new RegExp(`^${at}#`),
+		);
+		const note = vault.files.get(`${FOLDER}/Page 1.md`);
+		if (!note) throw new Error("no note");
+		note.content += "\n## Mine\n";
+
+		await importer(vault, c.store).run(src);
+
+		expect(vault.files.get(`${FOLDER}/Page 1.md`)?.content).toContain(
+			"## Mine",
+		);
+	});
+
+	test("what was remembered is let go once the cursor passes it", async () => {
+		const all = [item(1, { updated_at: "2026-09-24T10:00:00.000Z" })];
+		const { fetchPage } = serving(all);
+		const vault = new FakeVault([FOLDER]);
+		const c = cursors();
+		const { src } = source([], { fetchPage });
+		await importer(vault, c.store).run(src);
+		expect(Object.keys(c.written.lastUpdated)).toEqual([
+			"https://example.com/1",
+		]);
+		all.push(item(2, { updated_at: "2026-09-24T11:00:00.000Z" }));
+
+		await importer(vault, c.store).run(src);
+
+		expect(c.state.lastUpdated).toBe("2026-09-24T10:59:59.999Z");
+		expect(Object.keys(c.written.lastUpdated)).toEqual([
+			"https://example.com/2",
+		]);
+	});
+
+	test("what was written is remembered when an item with an unreadable date keeps the cursor still", async () => {
+		const { fetchPage } = serving([
+			item(1, { updated_at: "2026-09-24T10:00:00.000Z" }),
+		]);
+		const broken = item(2, { updated_at: "not a date" });
+		const vault = new FakeVault([FOLDER]);
+		const c = cursors({ lastUpdated: "2026-09-01T00:00:00.000Z" });
+		const { src } = source([], {
+			fetchPage: async (args) => {
+				const page = await fetchPage(args);
+				return { ...page, results: [...page.results, broken] };
+			},
+		});
+		await importer(vault, c.store).run(src);
+		expect(c.state.lastUpdated).toBe("2026-09-01T00:00:00.000Z");
+		const note = vault.files.get(`${FOLDER}/Page 1.md`);
+		if (!note) throw new Error("no note");
+		note.content += "\n## Mine\n";
+
+		await importer(vault, c.store).run(src);
+
+		expect(vault.files.get(`${FOLDER}/Page 1.md`)?.content).toContain(
+			"## Mine",
+		);
+	});
+
+	test("a large batch of changes made long ago is not fetched again on every sync", async () => {
+		// 300 items stamped within one minute, three hours ago.
+		const base = Date.now() - 3 * 60 * 60 * 1000;
+		const all = Array.from({ length: 300 }, (_, i) =>
+			item(i + 1, { updated_at: new Date(base + i * 200).toISOString() }),
+		);
+		const { fetchPage } = serving(all);
+		const vault = new FakeVault([FOLDER]);
+		const c = cursors();
+		const { src } = source([], { fetchPage });
+		await importer(vault, c.store).run(src);
+
+		const second = await importer(vault, c.store).run(src);
+
+		expect(second.fetched).toBeLessThanOrEqual(1);
+	});
+
+	test("an item whose content changed without a new update time is written again", async () => {
+		// A Kindle book is stamped with the day of its latest annotation, so a
+		// highlight added the same day keeps the time.
+		const at = new Date(Date.now() - 60 * 1000).toISOString();
+		const all = [item(1, { updated_at: at })];
+		const { fetchPage } = serving(all);
+		const vault = new FakeVault([FOLDER]);
+		const c = cursors();
+		const { src } = source([], { fetchPage });
+		await importer(vault, c.store).run(src);
+		all[0] = item(1, {
+			updated_at: at,
+			document_note: "a highlight added the same day",
+		});
+
+		const second = await importer(vault, c.store).run(src);
+
+		expect(second).toMatchObject({ updated: 1 });
+	});
+
+	test("once the plugin is unloaded, a failed page is not asked for again", async () => {
+		const vault = new FakeVault([FOLDER]);
+		let unloaded = false;
+		const fetchPage = vi.fn().mockImplementation(async () => {
+			// The plugin is disabled while the importer waits to ask again.
+			setTimeout(() => {
+				unloaded = true;
+			}, 5);
+			throw new APIError({ status: 0, message: "offline" });
+		});
+		const { src } = source([], { fetchPage });
+
+		await new ImportHighlights({
+			pageIntervalMs: 10,
+			obApp: new ObsidianApp(vault.app()),
+			cursors: cursors().store,
+			notify: () => {},
+			isCancelled: () => unloaded,
+		}).run(src);
+
+		expect(fetchPage).toHaveBeenCalledTimes(1);
 	});
 });

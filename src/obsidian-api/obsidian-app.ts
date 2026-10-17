@@ -19,6 +19,39 @@ const sha256 = async (text: string): Promise<string> => {
 	).join("");
 };
 
+/**
+ * The frontmatter of a note's text. When the YAML cannot be parsed, the
+ * plugin's own one-line `URL:` and `Glasp:` keys are still read, so the note is
+ * matched instead of duplicated. Null when the text has no frontmatter.
+ */
+export const parseFrontmatterText = (
+	text: string,
+): Record<string, unknown> | null => {
+	const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(text);
+	if (!match) return null;
+	const block = match[1];
+	try {
+		const parsed: unknown = parseYaml(block);
+		if (parsed && typeof parsed === "object") {
+			return parsed as Record<string, unknown>;
+		}
+	} catch (_e) {
+		// Fall through to the line-by-line read.
+	}
+	const keys: Record<string, unknown> = {};
+	for (const line of block.split(/\r?\n/)) {
+		const found = /^(URL|Glasp): (.*)$/.exec(line);
+		if (!found) continue;
+		const raw = found[2].trim();
+		try {
+			keys[found[1]] = raw.startsWith('"') ? JSON.parse(raw) : raw;
+		} catch (_e) {
+			keys[found[1]] = raw;
+		}
+	}
+	return Object.keys(keys).length ? keys : null;
+};
+
 export class ObsidianApp {
 	private app: App;
 
@@ -41,41 +74,36 @@ export class ObsidianApp {
 
 	/**
 	 * A note's frontmatter read from the file itself, for a note Obsidian has
-	 * no frontmatter for (not indexed yet, or not parseable). When the YAML
-	 * cannot be parsed, the plugin's own one-line `URL:` and `Glasp:` keys are
-	 * still read, so the note is matched instead of duplicated. Null when the
-	 * file has no frontmatter.
+	 * no frontmatter for (not indexed yet, or not parseable). Null when the file
+	 * has no frontmatter or cannot be read.
 	 */
 	async readFrontmatter(file: TFile): Promise<Record<string, unknown> | null> {
-		let block: string;
 		try {
-			const text = await this.getVault().cachedRead(file);
-			const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(text);
-			if (!match) return null;
-			block = match[1];
+			return parseFrontmatterText(await this.getVault().cachedRead(file));
 		} catch (_e) {
 			return null;
 		}
+	}
+
+	/** The frontmatter of the file at `path` on disk, indexed by Obsidian or not. */
+	async frontmatterAtPath(
+		path: string,
+	): Promise<Record<string, unknown> | null> {
 		try {
-			const parsed: unknown = parseYaml(block);
-			if (parsed && typeof parsed === "object") {
-				return parsed as Record<string, unknown>;
-			}
+			return parseFrontmatterText(await this.getVault().adapter.read(path));
 		} catch (_e) {
-			// Fall through to the line-by-line read.
+			return null;
 		}
-		const keys: Record<string, unknown> = {};
-		for (const line of block.split(/\r?\n/)) {
-			const match = /^(URL|Glasp): (.*)$/.exec(line);
-			if (!match) continue;
-			const raw = match[2].trim();
-			try {
-				keys[match[1]] = raw.startsWith('"') ? JSON.parse(raw) : raw;
-			} catch (_e) {
-				keys[match[1]] = raw;
-			}
-		}
-		return Object.keys(keys).length ? keys : null;
+	}
+
+	/** The frontmatter of a note's text (see `parseFrontmatterText`). */
+	frontmatterOf(text: string): Record<string, unknown> | null {
+		return parseFrontmatterText(text);
+	}
+
+	/** True while `file` is still the note at its path (not deleted, not replaced). */
+	isSameFile(file: TFile): boolean {
+		return this.getVault().getAbstractFileByPath(file.path) === file;
 	}
 
 	exists(path: string): boolean {
@@ -141,15 +169,26 @@ export class ObsidianApp {
 		source: string,
 	): Promise<boolean> {
 		const vault = this.getVault();
+		// Write only to the very note that was matched: since then it may have
+		// been deleted, or deleted and replaced by another note at the same path.
+		const stillThere = () => {
+			const there = vault.getAbstractFileByPath(file.path);
+			if (there !== file) {
+				throw new Error(
+					there
+						? "Another note took this note's place during the sync; it was left alone."
+						: "The note was deleted during the sync.",
+				);
+			}
+		};
+		stillThere();
 		let current: string | undefined;
 		try {
 			current = await vault.read(file);
 		} catch (_e) {
 			current = undefined;
-			// Do not bring back a note deleted while the sync ran.
-			if (!this.exists(file.path)) {
-				throw new Error("The note was deleted during the sync.");
-			}
+			// Do not bring back a note deleted while it was being read.
+			stillThere();
 		}
 		if (current === content) {
 			return false;
