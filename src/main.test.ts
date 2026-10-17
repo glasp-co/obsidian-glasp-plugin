@@ -516,6 +516,10 @@ describe("plugin lifecycle", () => {
 				summaryLastUpdated: { "https://s": "2026-10-01T00:00:00.000Z" },
 				lastUpdated: { "https://w": "2026-10-01T00:00:00.000Z" },
 			},
+			shownAhead: {
+				summaryLastUpdated: { "https://s": "2026-10-01T00:00:00.000Z x" },
+				lastUpdated: { "https://w": "2026-10-01T00:00:00.000Z y" },
+			},
 		});
 		await plugin.onload();
 		await plugin.setSummaryIncludeContent(true);
@@ -525,8 +529,12 @@ describe("plugin lifecycle", () => {
 			writtenAhead: {
 				lastUpdated: { "https://w": "2026-10-01T00:00:00.000Z" },
 			},
+			shownAhead: {
+				lastUpdated: { "https://w": "2026-10-01T00:00:00.000Z y" },
+			},
 		});
 		expect(plugin.store.get().writtenAhead?.summaryLastUpdated).toBeUndefined();
+		expect(plugin.store.get().shownAhead?.summaryLastUpdated).toBeUndefined();
 	});
 
 	test("an unknown update frequency falls back to daily", async () => {
