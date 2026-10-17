@@ -1,4 +1,10 @@
-import { Plugin, type TFile, addIcon, parseYaml } from "obsidian";
+import {
+	Plugin,
+	type TFile,
+	addIcon,
+	normalizePath,
+	parseYaml,
+} from "obsidian";
 import glaspIcon from "src/assets/glasp.svg";
 import { CoalescingRunner } from "./core/coalescing-runner";
 import { basesCommitPatch, cursorCommitPatch } from "./core/commit-rules";
@@ -27,7 +33,7 @@ import {
 	buildSyncReport,
 } from "./core/import-highlights/sync-report";
 import { useYamlParser } from "./core/import-highlights/yaml-tags";
-import { StateStore } from "./core/state-store";
+import { type StatePatch, StateStore } from "./core/state-store";
 import {
 	normalizeStorageData,
 	readStorageFile,
@@ -36,6 +42,9 @@ import {
 import { ObsidianApp, ObsidianNotice } from "./obsidian-api";
 import { SettingTab } from "./setting";
 import type { StorageData, UpdateFrequency } from "./types/storage";
+
+/** How long the first import waits when the plugin is loaded into a running Obsidian. */
+const FIRST_IMPORT_DELAY_MS = 5 * 60 * 1000;
 
 export default class ObsidianGlaspPlugin extends Plugin {
 	private settings: SettingTab;
@@ -75,10 +84,31 @@ export default class ObsidianGlaspPlugin extends Plugin {
 		(error) => console.error("Glasp: import failed", error),
 	);
 
+	/**
+	 * `loadData()`, except that a data.json that does not exist is reported as
+	 * none: Obsidian for iOS before 1.13 reports a missing file as unreadable
+	 * (undefined) when the device's language is not English.
+	 */
+	private async loadSettingsFile(): Promise<unknown> {
+		const raw = await this.loadData();
+		if (raw !== undefined) {
+			return raw;
+		}
+		try {
+			const path = normalizePath(
+				`${this.manifest.dir ?? `${this.app.vault.configDir}/plugins/${this.manifest.id}`}/data.json`,
+			);
+			return (await this.app.vault.adapter.exists(path)) ? undefined : null;
+		} catch (_e) {
+			// Cannot tell: treat it as unreadable, so it is not overwritten.
+			return undefined;
+		}
+	}
+
 	async onload() {
 		// Tags stay bare exactly when Obsidian's own parser reads them back.
 		useYamlParser(parseYaml);
-		const raw = await this.loadData();
+		const raw = await this.loadSettingsFile();
 		const file = readStorageFile(raw);
 		this.store = new StateStore(normalizeStorageData(file.data), (state) =>
 			this.unloaded
@@ -99,10 +129,12 @@ export default class ObsidianGlaspPlugin extends Plugin {
 				`The plugin's settings file (${this.manifest.dir ?? ".obsidian/plugins/glasp"}/data.json) could not be read, so nothing is imported. Fix the file (for example a conflict left by a sync tool) and reload the plugin. Until then, do not change Glasp settings: saving one replaces the file with defaults, including an empty access token and the default templates.`,
 				0,
 			);
-		} else if (!sameData(this.store.get(), raw)) {
+		} else if (raw !== null && !sameData(this.store.get(), raw)) {
 			// Save once only when the file needed migrating (an older version, or
 			// a new field), so a device starting with an old copy does not stamp
-			// it as new and push it to other devices.
+			// it as new and push it to other devices. A file that is not there yet
+			// is not written: on a device whose copy has not arrived from a sync
+			// service, the defaults would replace every device's settings.
 			try {
 				await this.store.update({});
 			} catch (e) {
@@ -111,11 +143,21 @@ export default class ObsidianGlaspPlugin extends Plugin {
 		}
 		this.addLeftBarIcon();
 		this.addCommandToPalette();
-		// Wait for the layout before the first import; notes whose frontmatter
-		// Obsidian has not indexed yet are read directly by the importer.
-		this.app.workspace.onLayoutReady(() => {
-			void this.importHighlights();
-		});
+		if (this.app.workspace.layoutReady) {
+			// Loaded into a running Obsidian (enabled, or updated in place): an
+			// older version updated in place keeps importing until its run ends,
+			// and two imports at once copy notes, so the first one waits.
+			const timer = window.setTimeout(() => {
+				void this.importHighlights();
+			}, FIRST_IMPORT_DELAY_MS);
+			this.register(() => window.clearTimeout(timer));
+		} else {
+			// Started with Obsidian: the first import waits for the layout; notes
+			// whose frontmatter Obsidian has not indexed yet are read directly.
+			this.app.workspace.onLayoutReady(() => {
+				void this.importHighlights();
+			});
+		}
 		this.registerAutoUpdate();
 	}
 
@@ -133,15 +175,23 @@ export default class ObsidianGlaspPlugin extends Plugin {
 		if (!this.store || this.unloaded) {
 			return;
 		}
+		const frequencyBefore = this.store.get().updateFrequency;
 		await this.store.replace(async (current) => {
 			const file = readStorageFile(await this.loadData());
 			if (!file.readable || !file.data) {
 				return current;
 			}
 			const fresh = normalizeStorageData(file.data);
+			if (!("createBasesViews" in file.data)) {
+				// Written by a device on 0.3.0, which drops this setting.
+				fresh.createBasesViews = current.createBasesViews;
+			}
 			return sameData(fresh, current) ? current : fresh;
 		});
 		const state = this.store.get();
+		if (state.updateFrequency !== frequencyBefore) {
+			this.registerAutoUpdate();
+		}
 		if (state.createBasesViews !== this.basesEnabled) {
 			this.basesRevision++;
 			this.basesEnabled = state.createBasesViews;
@@ -150,7 +200,7 @@ export default class ObsidianGlaspPlugin extends Plugin {
 	}
 
 	/** Save a settings change; says so if it could not be saved. */
-	async updateSettings(patch: Partial<StorageData>): Promise<void> {
+	async updateSettings(patch: StatePatch<StorageData>): Promise<void> {
 		try {
 			await this.store.update(patch);
 		} catch (e) {
@@ -170,9 +220,15 @@ export default class ObsidianGlaspPlugin extends Plugin {
 	async setSummaryIncludeContent(value: boolean): Promise<void> {
 		if (value) {
 			this.generations.summaryLastUpdated++;
-			await this.updateSettings({
-				summaryIncludeContent: true,
-				summaryLastUpdated: "",
+			await this.updateSettings((state) => {
+				// Every summary is to be written again, with its content.
+				const { summaryLastUpdated: _reset, ...others } =
+					state.writtenAhead ?? {};
+				return {
+					summaryIncludeContent: true,
+					summaryLastUpdated: "",
+					writtenAhead: Object.keys(others).length ? others : undefined,
+				};
 			});
 		} else {
 			await this.updateSettings({ summaryIncludeContent: false });
@@ -289,6 +345,9 @@ export default class ObsidianGlaspPlugin extends Plugin {
 	private async importPass() {
 		const atStart = this.store.get();
 		if (this.unloaded || !atStart.accessToken) {
+			// A Create missing notes asked for before the token was removed is
+			// dropped, not left to make some later sync a full one.
+			this.backfillRequested = false;
 			return;
 		}
 		const backfill = this.backfillRequested;
@@ -321,11 +380,19 @@ export default class ObsidianGlaspPlugin extends Plugin {
 				read: (key) => ({
 					value: this.store.get()[key],
 					generation: this.generations[key],
+					written: this.store.get().writtenAhead?.[key] ?? {},
 				}),
 				// Evaluated inside the state writer, when the write runs.
-				commit: (key, value, read) =>
+				commit: (key, value, read, written) =>
 					this.store.update((state) =>
-						cursorCommitPatch(state, key, value, read, this.generations[key]),
+						cursorCommitPatch(
+							state,
+							key,
+							value,
+							read,
+							this.generations[key],
+							written,
+						),
 					),
 			},
 		});

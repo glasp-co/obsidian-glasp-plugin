@@ -16,7 +16,7 @@ Import your [**Glasp**](https://glasp.co/) highlights, notes, **summaries**, and
 - 🔖 **Import bookmarks** — every page you've saved, as lightweight, metadata-rich notes.
 - 🗂️ **Database views (Obsidian Bases)** — each source gets an auto-generated `.base` view collected in a dedicated **`Glasp Bases`** folder, so you can browse everything as a sortable **Table** or a **Cards** gallery with thumbnails. _(Requires Obsidian 1.9+.)_
 - 🔁 **Automatic background sync** — every hour, every day, or once a week.
-- ➕ **Incremental & non-destructive** — only new/updated items are fetched, and existing notes are matched by source URL and updated in place (no duplicates). A note whose content has not changed is left alone, so its modification date stays put.
+- ➕ **Incremental** — only items changed since the last sync are fetched (with a few minutes of overlap; an item fetched again unchanged is left alone). Existing notes in the output folder are matched by source URL and updated in place, and a note whose content has not changed is left alone, so its modification date stays put. When an item changes on Glasp, its note is written again from the template, so text you add to the note yourself is replaced then; keep your own writing in a separate note. A note you move out of the output folder is no longer updated: when its item changes, a new note is created in the output folder.
 - 🧾 **Clear sync errors** — if an item can't be saved, **Settings → Glasp → Last sync errors** lists which one, where and why; later syncs try it again (for Create missing notes, run it again).
 - 🩹 **Create missing notes** — one button fetches all your items once and creates a note for each item that has none anywhere in your vault, for example items an earlier version could not save. Notes you moved to another folder stay where they are; notes you deleted are created again.
 - 🎨 **Customizable templates** — define your own Markdown layout and frontmatter for every source, or use the sensible defaults.
@@ -216,8 +216,8 @@ A new note is named after the item's title, cleaned so every platform Obsidian r
 - Your access token is stored **locally** in your vault (`.obsidian/plugins/glasp/data.json`) and is used **only** to call the official Glasp API at `https://api.glasp.co`.
 - The plugin has **read-only** access to your own content. It never sends your notes anywhere.
 - ⚠️ If you sync or share your vault, be aware that `data.json` contains your token — treat it like a password. Never paste the whole file into an issue or a chat; if you are asked for a value from it, copy only that line.
-- `data.json` also keeps the last sync's error list, which includes the titles and URLs of the items that failed.
-- If you sync the vault to other devices, update the plugin on all of them: an older version that saves its settings drops **Create Bases views**, which then reads as on again.
+- `data.json` also keeps the last sync's error list, which includes the titles and URLs of the items that failed, and, for each source, the URLs of the items most recently synced (at most 2,000 per source), so that the next sync leaves them alone when they have not changed.
+- If you sync the vault to other devices, update the plugin on all of them: a device on 0.3.0 does not know **Create Bases views**, and 0.4.1 keeps its own setting when such a device saves the file.
 
 ## 🛠️ Development
 
