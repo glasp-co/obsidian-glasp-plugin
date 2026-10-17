@@ -57,29 +57,30 @@ export const summarySource = (
 	folder: string,
 	template?: string,
 	includeContent?: boolean,
+	{
+		api = undefined,
+		isCancelled = undefined,
+	}: { api?: GlaspSummaryAPI; isCancelled?: () => boolean } = {},
 ): HighlightImportSource<Summary> => {
-	const api = new GlaspSummaryAPI({ accessToken });
+	const client = api ?? new GlaspSummaryAPI({ accessToken, isCancelled });
 	return {
 		label: "summaries",
 		folder,
 		template: template || SUMMARY_TEMPLATE,
 		lastUpdatedKey: "summaryLastUpdated",
-		fetchPage: (args) => api.fetchSummaries(args),
+		fetchPage: (args) => client.fetchSummaries(args),
 		normalize: normalizeSummary,
 		filename: (summary) =>
 			summary.title?.trim() || summary.domain || summary.id,
 		sourceType: "summary",
 		...(includeContent
 			? {
-					hydrate: async (summary: Summary): Promise<Summary> => {
-						try {
-							const content = await api.fetchSummaryContent(summary.id);
-							return { ...summary, content };
-						} catch (_e) {
-							// Best-effort: write the note without the full body.
-							return summary;
-						}
-					},
+					// A failure fails the item, so a note that has the full body is never
+					// overwritten by one without it; the item is retried next sync.
+					hydrate: async (summary: Summary): Promise<Summary> => ({
+						...summary,
+						content: await client.fetchSummaryContent(summary.id),
+					}),
 				}
 			: {}),
 	};
