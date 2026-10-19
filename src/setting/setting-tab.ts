@@ -418,7 +418,7 @@ export class SettingTab extends PluginSettingTab {
 		this.displayTemplateSetting(containerEl, {
 			name: "Web highlights template",
 			variables:
-				"{{url}}, {{glasp_url}}, {{thumbnail_url}}, {{tags}}, {{tags_yaml}}, {{updated_at}}, {{content}}, and {{#each highlights}} … {{/each}} with {{text}} (or {{highlight}}), {{note}}, {{color}}, {{highlightStyle}}, {{highlighted_at}}, {{yt_playback_position}}. Helper: (eq a b)",
+				"{{url}}, {{glasp_url}}, {{thumbnail_url}}, {{tags}}, {{tags_yaml}}, {{updated_at}}, {{content}}, and {{#each highlights}} … {{/each}} with {{text}} (or {{highlight}}), {{note}}, {{color}}, {{highlightStyle}}, {{highlighted_at}}, {{yt_playback_position}}. Helpers: (eq a b), (lines text)",
 			defaultTemplate: HIGHLIGHT_TEMPLATE,
 			key: "template",
 		});
@@ -428,7 +428,7 @@ export class SettingTab extends PluginSettingTab {
 		this.displayTemplateSetting(containerEl, {
 			name: "Kindle highlights template",
 			variables:
-				"{{url}}, {{glasp_url}}, {{author}}, {{thumbnail_url}}, {{tags}}, {{tags_yaml}}, {{updated_at}}, {{content}}, and {{#each highlights}} … {{/each}} with {{text}} (or {{highlight}}), {{note}}, {{color}}, {{highlightStyle}}, {{highlighted_at}}, {{location}}, {{location_type}}. Helper: (eq a b)",
+				"{{url}}, {{glasp_url}}, {{author}}, {{thumbnail_url}}, {{tags}}, {{tags_yaml}}, {{updated_at}}, {{content}}, and {{#each highlights}} … {{/each}} with {{text}} (or {{highlight}}), {{note}}, {{color}}, {{highlightStyle}}, {{highlighted_at}}, {{location}}, {{location_type}}. Helpers: (eq a b), (lines text)",
 			defaultTemplate: KINDLE_HIGHLIGHT_TEMPLATE,
 			key: "kindleTemplate",
 		});

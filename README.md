@@ -108,8 +108,8 @@ You can fully control how each note looks using [Handlebars](https://handlebarsj
 | --- | --- |
 | `{{text}}` (or `{{highlight}}`) | The highlighted text |
 | `{{note}}` | Your note on it (empty if none) |
-| `{{color}}` | `pink`, `yellow`, `blue` or `green` (Kindle too; an orange Kindle highlight currently comes through as `pink` or `green`) |
-| `{{highlightStyle}}` | The colour as a number: `"1"` pink, `"2"` yellow, `"3"` green, `"4"` blue |
+| `{{color}}` | `pink`, `yellow`, `blue` or `green` (Kindle: `pink`, `yellow`, `blue` or `orange`) |
+| `{{highlightStyle}}` | The colour as a number: `"1"` pink, `"2"` yellow, `"3"` green, `"4"` blue, `"5"` orange |
 | `{{highlighted_at}}` | When you highlighted it |
 | `{{yt_playback_position}}` | YouTube timestamp in seconds (web only; empty otherwise) |
 | `{{location}}`, `{{location_type}}` | Kindle location (Kindle only) |
@@ -134,6 +134,25 @@ Tags: [{{tags_yaml}}]
 ```
 
 `highlightStyle` is a string, so compare it with a quoted number (`"1"`), or compare `color` instead (`(eq color "pink")`).
+
+#### Highlights that span several lines
+
+Markdown such as `==…==` or `> ` applies to one line, so a highlight that spans several lines needs it on each of them. The `lines` helper gives a text's lines, trimmed and without the empty ones: loop over `(lines highlight)` or `(lines note)`, where `{{this}}` is the line and `../` reaches the highlight's own fields. For example, with the coloured highlights of Obsidian 1.14 and later (a colour emoji at the start of a highlight sets its colour):
+
+```handlebars
+{{#each highlights}}
+{{#each (lines highlight)}}
+=={{#if (eq ../highlightStyle "1")}}🔴{{else if (eq ../highlightStyle "2")}}🟡{{else if (eq ../highlightStyle "3")}}🟢{{else if (eq ../highlightStyle "4")}}🔵{{else if (eq ../highlightStyle "5")}}🟠{{/if}}{{{this}}}==
+{{/each}}
+{{#if (lines note)}}
+> [!Note]
+{{#each (lines note)}}
+> {{{this}}}
+{{/each}}
+{{/if}}
+
+{{/each}}
+```
 
 <details>
 <summary>Default web template</summary>

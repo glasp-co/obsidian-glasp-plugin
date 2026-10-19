@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import type { UserHighlight } from "src/glasp-api/highlight/type";
 import type { KindleBook } from "src/glasp-api/kindle-highlight/type";
 import { describe, expect, test } from "vitest";
@@ -217,5 +218,83 @@ describe("custom templates", () => {
 			})),
 		});
 		expect(data.highlights.map((h) => h.highlightStyle)).toEqual(["1", "3"]);
+	});
+});
+
+describe("the lines helper", () => {
+	const each = (t: unknown) =>
+		renderTemplate("{{#each (lines t)}}[{{this}}]{{/each}}", { t });
+
+	test("splits at any line break, trims each line and leaves out the empty ones", () => {
+		expect(each("  a \r\n\nb\rc\n \t\n")).toBe("[a][b][c]");
+		expect(each("one line")).toBe("[one line]");
+	});
+
+	test("anything but a string, or only blank lines, gives no lines", () => {
+		for (const t of [undefined, null, 5, ["a"], { a: 1 }, "", " \n "]) {
+			expect(each(t)).toBe("");
+		}
+	});
+
+	test("../ reaches the highlight's own fields", () => {
+		const data = normalizeHighlight({
+			...page([]),
+			highlights: [{ ...page([]).highlights[1], text: "x\ny" }],
+		});
+		expect(
+			renderTemplate(
+				"{{#each highlights}}{{#each (lines highlight)}}<{{../highlightStyle}}{{this}}>{{/each}}{{/each}}",
+				data,
+			),
+		).toBe("<4x><4y>");
+	});
+
+	test("the README's example writes each line of a highlight and its note on its own", () => {
+		const template = [
+			"{{#each highlights}}",
+			"{{#each (lines highlight)}}",
+			'=={{#if (eq ../highlightStyle "1")}}🔴{{else if (eq ../highlightStyle "2")}}🟡{{else if (eq ../highlightStyle "3")}}🟢{{else if (eq ../highlightStyle "4")}}🔵{{else if (eq ../highlightStyle "5")}}🟠{{/if}}{{{this}}}==',
+			"{{/each}}",
+			"{{#if (lines note)}}",
+			"> [!Note]",
+			"{{#each (lines note)}}",
+			"> {{{this}}}",
+			"{{/each}}",
+			"{{/if}}",
+			"",
+			"{{/each}}",
+			"",
+		].join("\n");
+		expect(readFileSync("README.md", "utf8")).toContain(
+			`\`\`\`handlebars\n${template}\`\`\``,
+		);
+		const [first, second] = page([]).highlights;
+		const data = normalizeHighlight({
+			...page([]),
+			highlights: [
+				{
+					...second,
+					text: "A list:\n1) first point\n\n2) second point",
+					note: "first\nsecond",
+				},
+				{ ...first, text: "Single", note: " \n " },
+				{ ...first, text: " \n ", note: "" },
+			],
+		});
+		expect(renderTemplate(template, data)).toBe(
+			[
+				"==🔵A list:==",
+				"==🔵1) first point==",
+				"==🔵2) second point==",
+				"> [!Note]",
+				"> first",
+				"> second",
+				"",
+				"==🟡Single==",
+				"",
+				"",
+				"",
+			].join("\n"),
+		);
 	});
 });
