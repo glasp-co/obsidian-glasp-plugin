@@ -1,8 +1,7 @@
 /**
  * `highlightStyle` for each colour, as a string: "1" pink, "2" yellow,
- * "3" green, "4" blue (the order the colours were asked for in). "5" is kept
- * for orange, which the API does not send yet (a Kindle orange highlight
- * arrives as pink). A colour not listed gives "".
+ * "3" green, "4" blue (the order the colours were asked for in), and "5"
+ * orange, which only Kindle highlights have. A colour not listed gives "".
  */
 export const HIGHLIGHT_STYLE: ReadonlyMap<string, string> = new Map([
 	["pink", "1"],
