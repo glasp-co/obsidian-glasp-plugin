@@ -5,7 +5,7 @@ export type HighlightTemplateItem = {
 	highlight: string;
 	note: string;
 	color: string;
-	/** "1" pink, "2" yellow, "3" green, "4" blue. */
+	/** "1" pink, "2" yellow, "3" green, "4" blue, "5" orange (Kindle). */
 	highlightStyle: string;
 	highlighted_at: string;
 };
