@@ -107,6 +107,26 @@ describe("plugin lifecycle", () => {
 		expect(shownNotices.join("\n")).toMatch(/could not be read/);
 	});
 
+	test("without a plugin folder from Obsidian, an unreadable data.json is looked for in the vault's own config folder", async () => {
+		const vault = new FakeVault(["Glasp"]);
+		vault.seed(".config/plugins/glasp/data.json", "<<<<<<< a sync conflict");
+		const app = vault.app() as unknown as Record<string, unknown>;
+		(app.vault as { configDir: string }).configDir = ".config";
+		app.workspace = { layoutReady: true, onLayoutReady: () => {} };
+		const plugin = new ObsidianGlaspPlugin(
+			app as never,
+			{
+				id: "glasp",
+			} as never,
+		) as Stub;
+		plugin.stored = undefined;
+		await plugin.onload();
+		expect(plugin.saves).toEqual([]);
+		expect(shownNotices.join("\n")).toMatch(
+			/\(\.config\/plugins\/glasp\/data\.json\) could not be read/,
+		);
+	});
+
 	test("a data.json that is not there yet counts as new even when Obsidian calls it unreadable", async () => {
 		// Obsidian for iOS before 1.13 does that when the device's language is
 		// not English.

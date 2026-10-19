@@ -84,6 +84,13 @@ export default class ObsidianGlaspPlugin extends Plugin {
 		(error) => console.error("Glasp: import failed", error),
 	);
 
+	/** Where this plugin's data.json is (the vault's config folder can be renamed). */
+	private settingsFilePath(): string {
+		return normalizePath(
+			`${this.manifest.dir ?? `${this.app.vault.configDir}/plugins/${this.manifest.id}`}/data.json`,
+		);
+	}
+
 	/**
 	 * `loadData()`, except that a data.json that does not exist is reported as
 	 * none: Obsidian for iOS before 1.13 reports a missing file as unreadable
@@ -95,11 +102,10 @@ export default class ObsidianGlaspPlugin extends Plugin {
 			return raw;
 		}
 		try {
-			const path = normalizePath(
-				`${this.manifest.dir ?? `${this.app.vault.configDir}/plugins/${this.manifest.id}`}/data.json`,
-			);
-			return (await this.app.vault.adapter.exists(path)) ? undefined : null;
-		} catch (_e) {
+			return (await this.app.vault.adapter.exists(this.settingsFilePath()))
+				? undefined
+				: null;
+		} catch {
 			// Cannot tell: treat it as unreadable, so it is not overwritten.
 			return undefined;
 		}
@@ -126,7 +132,7 @@ export default class ObsidianGlaspPlugin extends Plugin {
 			// left as it is, so the user can repair it.
 			console.warn("Glasp: data.json could not be read; it was not changed");
 			new ObsidianNotice(
-				`The plugin's settings file (${this.manifest.dir ?? ".obsidian/plugins/glasp"}/data.json) could not be read, so nothing is imported. Fix the file (for example a conflict left by a sync tool) and reload the plugin. Until then, do not change Glasp settings: saving one replaces the file with defaults, including an empty access token and the default templates.`,
+				`The plugin's settings file (${this.settingsFilePath()}) could not be read, so nothing is imported. Fix the file (for example a conflict left by a sync tool) and reload the plugin. Until then, do not change Glasp settings: saving one replaces the file with defaults, including an empty access token and the default templates.`,
 				0,
 			);
 		} else if (raw !== null && !sameData(this.store.get(), raw)) {

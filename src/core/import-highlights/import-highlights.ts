@@ -133,7 +133,7 @@ const shownHashOf = <T extends Item>(
 ): string | null => {
 	try {
 		return shownHashFrom(normalize(item));
-	} catch (_e) {
+	} catch {
 		return null;
 	}
 };

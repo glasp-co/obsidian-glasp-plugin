@@ -1,4 +1,4 @@
-import type { App, TFile } from "obsidian";
+import { type App, TFile, TFolder } from "obsidian";
 
 type Entry = { path: string; content: string; mtime: number };
 
@@ -43,14 +43,18 @@ export class FakeVault {
 	private handle(path: string): TFile {
 		const entry = this.files.get(path);
 		if (!entry) {
-			return { path } as TFile;
+			return Object.assign(new TFile(), { path });
 		}
 		let file = this.handles.get(entry);
 		if (!file) {
-			file = { path } as TFile;
+			file = Object.assign(new TFile(), { path });
 			this.handles.set(entry, file);
 		}
 		return file;
+	}
+
+	private folder(path: string): TFolder {
+		return Object.assign(new TFolder(), { path });
 	}
 
 	app(): App {
@@ -58,17 +62,17 @@ export class FakeVault {
 			getFiles: () => [...this.files.keys()].map((p) => this.handle(p)),
 			getAllLoadedFiles: () => [
 				...[...this.files.keys()].map((p) => this.handle(p)),
-				...[...this.folders].map((p) => ({ path: p })),
+				...[...this.folders].map((p) => this.folder(p)),
 			],
 			getAbstractFileByPath: (path: string) =>
 				this.files.has(path)
 					? this.handle(path)
 					: this.folders.has(path)
-						? { path }
+						? this.folder(path)
 						: null,
 			getFolderByPath: (path: string) =>
-				this.folders.has(path) ? { path } : null,
-			getAllFolders: () => [...this.folders].map((p) => ({ path: p })),
+				this.folders.has(path) ? this.folder(path) : null,
+			getAllFolders: () => [...this.folders].map((p) => this.folder(p)),
 			create: async (path: string, content: string) => {
 				this.created.push(path);
 				const injected = this.failCreate?.(path);
