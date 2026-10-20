@@ -1,7 +1,7 @@
 import {
 	type App,
 	type CachedMetadata,
-	type TFile,
+	TFile,
 	type TFolder,
 	type Vault,
 	parseYaml,
@@ -35,7 +35,7 @@ export const parseFrontmatterText = (
 		if (parsed && typeof parsed === "object") {
 			return parsed as Record<string, unknown>;
 		}
-	} catch (_e) {
+	} catch {
 		// Fall through to the line-by-line read.
 	}
 	const keys: Record<string, unknown> = {};
@@ -45,7 +45,7 @@ export const parseFrontmatterText = (
 		const raw = found[2].trim();
 		try {
 			keys[found[1]] = raw.startsWith('"') ? JSON.parse(raw) : raw;
-		} catch (_e) {
+		} catch {
 			keys[found[1]] = raw;
 		}
 	}
@@ -80,7 +80,7 @@ export class ObsidianApp {
 	async readFrontmatter(file: TFile): Promise<Record<string, unknown> | null> {
 		try {
 			return parseFrontmatterText(await this.getVault().cachedRead(file));
-		} catch (_e) {
+		} catch {
 			return null;
 		}
 	}
@@ -91,7 +91,7 @@ export class ObsidianApp {
 	): Promise<Record<string, unknown> | null> {
 		try {
 			return parseFrontmatterText(await this.getVault().adapter.read(path));
-		} catch (_e) {
+		} catch {
 			return null;
 		}
 	}
@@ -185,7 +185,7 @@ export class ObsidianApp {
 		let current: string | undefined;
 		try {
 			current = await vault.read(file);
-		} catch (_e) {
+		} catch {
 			current = undefined;
 			// Do not bring back a note deleted while it was being read.
 			stillThere();
@@ -206,7 +206,7 @@ export class ObsidianApp {
 					before,
 					after,
 				);
-			} catch (_e) {
+			} catch {
 				// Diagnostics only; never fails the write.
 			}
 		}
@@ -220,11 +220,13 @@ export class ObsidianApp {
 		}
 	}
 
-	/** Create the file, or overwrite it if it already exists. */
+	/** Create the file, or overwrite it if it already exists (a folder there is an error). */
 	async writeFile(path: string, content: string): Promise<void> {
 		const existing = this.getVault().getAbstractFileByPath(path);
-		if (existing) {
-			await this.getVault().modify(existing as TFile, content);
+		if (existing instanceof TFile) {
+			await this.getVault().modify(existing, content);
+		} else if (existing) {
+			throw new Error(`"${path}" is a folder, not a file.`);
 		} else {
 			await this.getVault().create(path, content);
 		}

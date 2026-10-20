@@ -90,7 +90,7 @@ export const parsesBackBare = (tag: string, parse: YamlParse): boolean => {
 	try {
 		const parsed = (parse(`Tags: [${tag}]`) as { Tags?: unknown } | null)?.Tags;
 		return Array.isArray(parsed) && parsed.length === 1 && parsed[0] === tag;
-	} catch (_e) {
+	} catch {
 		return false;
 	}
 };

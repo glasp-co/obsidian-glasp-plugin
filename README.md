@@ -249,7 +249,7 @@ npm test         # run unit tests
 npm run build    # production build
 ```
 
-To develop against a live vault, clone into `[YourVault]/.obsidian/plugins/` and run `npm run dev`.
+To develop against a live vault, clone into `[YourVault]/.obsidian/plugins/glasp` and run `npm run dev`. See [CONTRIBUTING.md](./CONTRIBUTING.md) before opening a pull request.
 
 ## 🐞 Bugs & feedback
 

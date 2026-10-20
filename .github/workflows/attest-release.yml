@@ -1,0 +1,63 @@
+name: Attest release assets
+
+# Builds main.js from the tagged commit and, only if the release's main.js is
+# byte for byte that build and its manifest.json is the tag's, records a build
+# provenance attestation for both. Check one with:
+#   gh attestation verify main.js --repo glasp-co/obsidian-glasp-plugin
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to attest (for example 0.4.4)"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  attest:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - name: The tag is a version number
+        run: |
+          [[ "$TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Not a release tag: $TAG"; exit 1; }
+
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: ".node-version"
+
+      - name: Install packages
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: The release's files are the ones this commit builds
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir released
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern main.js --pattern manifest.json --dir released
+          cmp main.js released/main.js
+          cmp manifest.json released/manifest.json
+
+      - name: Attest
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            released/main.js
+            released/manifest.json
