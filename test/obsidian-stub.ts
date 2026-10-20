@@ -1,5 +1,12 @@
 // Stand-in for the "obsidian" module in unit tests. The real package ships
 // only type declarations; Obsidian provides the module at runtime.
+
+/** Files and folders, so that `instanceof TFile` works as in Obsidian. */
+export class TAbstractFile {
+	path = "";
+}
+export class TFile extends TAbstractFile {}
+export class TFolder extends TAbstractFile {}
 export class Notice {
 	constructor(
 		public message: string,

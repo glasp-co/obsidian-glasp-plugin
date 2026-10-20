@@ -56,7 +56,7 @@ export const syncBases = async (
 
 	try {
 		await deps.ensureFolder(GLASP_BASES_FOLDER);
-	} catch (_e) {
+	} catch {
 		// Can't create the folder; skip (non-fatal — notes still import).
 		return;
 	}
@@ -76,7 +76,7 @@ export const syncBases = async (
 				await deps.writeFile(path, spec.content);
 			}
 			written[spec.filename] = spec.folder;
-		} catch (_e) {
+		} catch {
 			// Non-fatal: the notes still import without this database view.
 		}
 	}
