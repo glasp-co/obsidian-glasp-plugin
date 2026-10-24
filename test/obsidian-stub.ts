@@ -73,6 +73,10 @@ export class Plugin {
 	register(cb: () => void): void {
 		this.cleanups.push(cb);
 	}
+	events: unknown[] = [];
+	registerEvent(ref: unknown): void {
+		this.events.push(ref);
+	}
 }
 
 export class PluginSettingTab {

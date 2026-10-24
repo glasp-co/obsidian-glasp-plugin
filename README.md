@@ -14,7 +14,7 @@ Import your [**Glasp**](https://glasp.co/) highlights, notes, **summaries**, and
 - 📚 **Import Kindle highlights & notes** into a **separate** folder, so book highlights stay out of your web notes.
 - 📝 **Import summaries** — your Glasp AI page/video summaries as notes, optionally embedding the full article/PDF text.
 - 🔖 **Import bookmarks** — every page you've saved, as lightweight, metadata-rich notes.
-- 🗂️ **Database views (Obsidian Bases)** — each source gets an auto-generated `.base` view collected in a dedicated **`Glasp Bases`** folder, so you can browse everything as a sortable **Table** or a **Cards** gallery with thumbnails. _(Requires Obsidian 1.9+.)_
+- 🗂️ **Database views (Obsidian Bases)** — each source gets an auto-generated `.base` view collected in one folder (**`Glasp Bases`**, or one you choose), so you can browse everything as a sortable **Table** or a **Cards** gallery with thumbnails. _(Requires Obsidian 1.9+.)_
 - 🔁 **Automatic background sync** — every hour, every day, or once a week.
 - ➕ **Incremental** — only items changed since the last sync are fetched (with a few minutes of overlap; an item fetched again unchanged is left alone). Existing notes in the output folder are matched by source URL and updated in place, and a note whose content has not changed is left alone, so its modification date stays put. When an item changes on Glasp, its note is written again from the template, so text you add to the note yourself is replaced then; keep your own writing in a separate note. A note you move out of the output folder is no longer updated: when its item changes, a new note is created in the output folder.
 - 🧾 **Clear sync errors** — if an item can't be saved, **Settings → Glasp → Last sync errors** lists which one, where and why; later syncs try it again (for Create missing notes, run it again).
@@ -49,7 +49,7 @@ Import your [**Glasp**](https://glasp.co/) highlights, notes, **summaries**, and
    - Tip: give each source its own folder to keep them tidy.
 4. Pick an **update frequency**. Your data is imported on startup and then on that schedule. You can also trigger an import any time via the ribbon icon or the command palette (**“Glasp: Import highlights”**).
 
-Once a source has imported, a matching database view appears in the **`Glasp Bases`** folder — open it and switch between **Table** and **Cards** at the top.
+Once a source has imported, a matching database view appears in the **`Glasp Bases`** folder (or the **Bases folder** you chose) — open it and switch between **Table** and **Cards** at the top.
 
 ## ⚙️ Settings
 
@@ -61,7 +61,8 @@ Once a source has imported, a matching database view appears in the **`Glasp Bas
 | **Summaries output folder** | Where summary notes are saved. Unset = skip summary import. |
 | **Include full page content in summaries** | Also embed the full article/PDF text in each summary note. Slower (one extra request per summary) and makes notes larger. Turning it on fetches every summary again. Glasp limits how many of these requests can be made per day, so with a very large library the full text can take more than a day to arrive; the oldest summaries are filled first. |
 | **Bookmarks output folder** | Where bookmark notes are saved. Unset = skip bookmark import. |
-| **Create Bases views** | Create the database views in a **`Glasp Bases`** folder (on by default). When off, the plugin creates no `Glasp Bases` folder and no `.base` file, and leaves existing ones alone. |
+| **Create Bases views** | Create the database views in the **Bases folder** (on by default). When off, the plugin creates no Bases folder and no `.base` file, and leaves existing ones alone. |
+| **Bases folder** | Where the database views go (available while **Create Bases views** is on). Default: **`Glasp Bases`** at the top of your vault. Choosing another folder moves the views (`Glasp Web Highlights.base`, `Glasp Summaries.base`, …) from the old folder to it; a file already there with the same name is never overwritten. If the old folder was `Glasp Bases` and the move left it empty, it is removed as your **Files and links → Deleted files** setting says. Moving the Bases folder in Obsidian's file explorer changes this setting too. |
 | **Update frequency** | How often your data is synced automatically (hourly / daily / weekly). |
 | **Create missing notes** | Fetches all your items once and creates a note for every item that has no note anywhere in your vault. Existing notes are not changed, wherever they are; notes you deleted are created again. |
 | **Last sync errors** | What the last sync could not do (source, title, URL, file, reason), grouped by problem. Up to 500 items are kept (fewer when titles and URLs are long), with the total. |
@@ -71,12 +72,12 @@ An output folder must already exist; the plugin does not create it. If it is mis
 
 ## 🗂️ Database views (Bases)
 
-For every enabled source, the plugin creates a [Bases](https://help.obsidian.md/bases) view in a top-level **`Glasp Bases`** folder — for example `Glasp Bookmarks.base` and `Glasp Summaries.base`. Each view is a live database over that source's notes, so your imports read like a table instead of a long file list:
+For every enabled source, the plugin creates a [Bases](https://help.obsidian.md/bases) view in the **Bases folder** (a top-level **`Glasp Bases`** folder unless you choose another one in the settings) — for example `Glasp Bookmarks.base` and `Glasp Summaries.base`. Each view is a live database over that source's notes, so your imports read like a table instead of a long file list:
 
 - **Table** view for sorting and scanning by domain, date, tags, etc.
 - **Cards** view with thumbnail covers for a visual gallery.
 
-The views are created once and are **not** re-created if you delete them, so you're free to customize or remove them. Deleting the whole `Glasp Bases` folder keeps it deleted, until you enable another source or change a source's output folder (either one writes that view again). To keep the plugin out of your folder structure altogether, turn off **Create Bases views**.
+The views are created once and are **not** re-created if you delete them, so you're free to customize or remove them. Deleting the whole Bases folder keeps it deleted, until you enable another source or change a source's output folder (either one writes that view again, in the Bases folder). When a source's output folder changes, only the view's folder filter is changed, so what else you changed in the view (columns, sort, widths) stays; a view whose folder filter you changed, or a file of your own with the same name, is left as it is, and the plugin says so. To keep the views somewhere else, such as inside the folder you keep your highlights in, choose that folder as the **Bases folder**, or simply drag the `Glasp Bases` folder there in Obsidian: the plugin follows the folder when it is moved or renamed in Obsidian (a move made outside Obsidian, for example in Finder, is not followed: choose the folder in the settings instead). A view works wherever it is, because it lists the notes in its source's folder. If you moved the `Glasp Bases` folder before this setting existed, the next sync makes the folder holding your views the Bases folder, when all of them are found together in one folder. While another folder is chosen, views that turn up in `Glasp Bases` (for example written by a device on an earlier version) are moved to it at the next sync, unless a view with the same name is already there, and `Glasp Bases` is removed if that left it empty. To keep the plugin out of your folder structure altogether, turn off **Create Bases views**.
 
 > Bases is a core plugin included with Obsidian 1.9+. Enable it under **Settings → Core plugins → Bases** if it isn't already.
 
@@ -236,7 +237,7 @@ A new note is named after the item's title, cleaned so every platform Obsidian r
 - The plugin has **read-only** access to your own content. It never sends your notes anywhere.
 - ⚠️ If you sync or share your vault, be aware that `data.json` contains your token — treat it like a password. Never paste the whole file into an issue or a chat; if you are asked for a value from it, copy only that line.
 - `data.json` also keeps the last sync's error list, which includes the titles and URLs of the items that failed, and, for each source, the URLs of the items most recently synced (at most 2,000 per source), so that the next sync leaves them alone when they have not changed.
-- If you sync the vault to other devices, update the plugin on all of them: a device on 0.3.0 does not know **Create Bases views**, and the plugin keeps this device's setting when such a device saves the file.
+- If you sync the vault to other devices, update the plugin on all of them: a device on 0.3.0 does not know **Create Bases views** or **Bases folder** (and creates the `Glasp Bases` folder again on every sync), and a device on an earlier 0.4 version does not know **Bases folder**, so a view it writes goes to `Glasp Bases`. The plugin keeps this device's settings when a device on 0.3.0 saves the file.
 
 ## 🛠️ Development
 

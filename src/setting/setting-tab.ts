@@ -5,6 +5,7 @@ import {
 	KINDLE_HIGHLIGHT_TEMPLATE,
 	SUMMARY_TEMPLATE,
 } from "../constant/template";
+import { GLASP_BASES_FOLDER } from "../core/import-highlights/bases";
 import type {
 	FailureStage,
 	SyncFailure,
@@ -106,6 +107,7 @@ export class SettingTab extends PluginSettingTab {
 		this.displaySummaryIncludeContent(containerEl);
 		this.displaySelectBookmarkFiles(containerEl);
 		this.displayCreateBasesViews(containerEl);
+		this.displayBasesFolder(containerEl);
 		this.displaySelectRefreshTime(containerEl);
 		this.displayCreateMissingNotes(containerEl);
 		this.displayAdvancedSettings(containerEl);
@@ -253,12 +255,48 @@ export class SettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("Create Bases views")
 			.setDesc(
-				"Create a database view (.base file) for each source in a “Glasp Bases” folder. When off, the plugin creates no such folder or file and leaves existing ones alone.",
+				"Create a database view (.base file) for each source in the Bases folder. When off, the plugin creates no such folder or file and leaves existing ones alone.",
 			)
 			.addToggle((toggle) => {
 				toggle.setValue(this.value.createBasesViews).onChange(async (value) => {
 					await this.glaspPlugin.setCreateBasesViews(value);
+					// Bases folder can be chosen only while this is on.
+					this.display();
 				});
+			});
+	}
+
+	private displayBasesFolder(containerEl: HTMLElement): void {
+		const current = this.glaspPlugin.currentBasesFolder();
+		const options: Record<string, string> = {};
+		for (const folder of this.obApp.getAllFolders()) {
+			options[folder.path] = folder.path;
+		}
+		// The default stays offered after its folder is gone, to go back to it.
+		for (const folder of [current, GLASP_BASES_FOLDER]) {
+			if (!(folder in options)) {
+				options[folder] = `${folder} (created when needed)`;
+			}
+		}
+		new Setting(containerEl)
+			.setName("Bases folder")
+			.setDesc(
+				"Folder for the database views. Choosing another one moves the plugin's views there. Turn on the setting above to choose one.",
+			)
+			.addDropdown((dropdown) => {
+				dropdown
+					.addOptions(options)
+					.setValue(current)
+					.setDisabled(!this.value.createBasesViews)
+					.onChange(async (value) => {
+						// One change at a time: the views move before another is chosen.
+						dropdown.setDisabled(true);
+						try {
+							await this.glaspPlugin.setBasesFolder(value);
+						} finally {
+							this.display();
+						}
+					});
 			});
 	}
 
