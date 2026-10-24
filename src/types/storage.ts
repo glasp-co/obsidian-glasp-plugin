@@ -32,10 +32,17 @@ export type StorageData = {
 	 */
 	basesCreated?: Record<string, string>;
 	/**
-	 * "Create Bases views". Off = no `Glasp Bases` folder and no `.base` file
-	 * is created or rewritten. Missing (every 0.3.0 vault) means on.
+	 * "Create Bases views". Off = no Bases folder and no `.base` file is
+	 * created or rewritten. Missing (every 0.3.0 vault) means on.
 	 */
 	createBasesViews: boolean;
+	/**
+	 * "Bases folder": where the `.base` views go. Missing (every vault before
+	 * this setting, and the default) means `Glasp Bases` at the top of the
+	 * vault; read it with `resolveBasesFolder`. Not given a default in
+	 * data.json, so a data.json from 0.4.x is not rewritten for it.
+	 */
+	basesFolder?: string;
 	/** What failed in the last sync; never read to decide what to import. */
 	lastSyncReport?: SyncReport;
 	/**

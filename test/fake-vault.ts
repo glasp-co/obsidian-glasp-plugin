@@ -15,6 +15,17 @@ export class FakeVault {
 	folders = new Set<string>();
 	created: string[] = [];
 	modified: string[] = [];
+	/** Paths put in the trash through the file manager. */
+	trashed: string[] = [];
+	/** Files on disk that Obsidian does not list (dotfiles, files still syncing in). */
+	diskOnly = new Set<string>();
+	/** Moves made through the file manager (which may ask to update links). */
+	linkUpdatingMoves: string[] = [];
+	/** Moves made through the vault (no link update, no question). */
+	quietMoves: string[] = [];
+	/** Awaited by `create` before it writes, to hold a create in flight. */
+	beforeCreate?: (path: string) => Promise<void>;
+	private listeners = new Map<string, ((...args: unknown[]) => void)[]>();
 	failCreate?: (path: string) => Error | undefined;
 	failRead = false;
 	/** Paths Obsidian has not indexed yet: getFileCache returns null for them. */
@@ -36,6 +47,61 @@ export class FakeVault {
 		this.files.set(path, { path, content, mtime: ++this.clock });
 	}
 
+	/**
+	 * Move a folder and everything in it, as a move in Obsidian's file explorer
+	 * does, and tell listeners as Obsidian 1.14 does: a rename event for the
+	 * folder, then one for each folder and file in it.
+	 */
+	moveFolder(from: string, to: string) {
+		const moved = (p: string) =>
+			p === from || p.startsWith(`${from}/`) ? to + p.slice(from.length) : p;
+		const inside = [...this.folders, ...this.files.keys()].filter((p) =>
+			p.startsWith(`${from}/`),
+		);
+		for (const folder of [...this.folders]) {
+			this.folders.delete(folder);
+			this.folders.add(moved(folder));
+		}
+		for (const [path, entry] of [...this.files]) {
+			if (moved(path) !== path) {
+				this.files.delete(path);
+				entry.path = moved(path);
+				this.files.set(entry.path, entry);
+				this.handle(entry.path).path = entry.path;
+			}
+		}
+		this.emit("rename", this.folder(to), from);
+		for (const old of inside) {
+			const now = moved(old);
+			this.emit(
+				"rename",
+				this.folders.has(now) ? this.folder(now) : this.handle(now),
+				old,
+			);
+		}
+	}
+
+	private emit(name: string, ...args: unknown[]) {
+		for (const listener of this.listeners.get(name) ?? []) listener(...args);
+	}
+
+	private moveEntry(from: string, to: string) {
+		const entry = this.files.get(from);
+		if (!entry) throw new Error("ENOENT");
+		if (this.files.has(to) || this.folders.has(to)) {
+			throw new Error("Destination file already exists!");
+		}
+		const folder = to.slice(0, to.lastIndexOf("/"));
+		if (!this.folders.has(folder)) {
+			throw new Error(`ENOENT: no such folder ${folder}`);
+		}
+		const handle = this.handle(from);
+		this.files.delete(from);
+		entry.path = to;
+		this.files.set(to, entry);
+		handle.path = to;
+	}
+
 	mtime(path: string): number | undefined {
 		return this.files.get(path)?.mtime;
 	}
@@ -53,8 +119,18 @@ export class FakeVault {
 		return file;
 	}
 
+	/** A folder with its direct children, as Obsidian's TFolder has. */
 	private folder(path: string): TFolder {
-		return Object.assign(new TFolder(), { path });
+		const parentOf = (p: string) => p.slice(0, Math.max(p.lastIndexOf("/"), 0));
+		const children = [
+			...[...this.files.keys()]
+				.filter((p) => parentOf(p) === path)
+				.map((p) => this.handle(p)),
+			...[...this.folders]
+				.filter((p) => p !== path && parentOf(p) === path)
+				.map((p) => Object.assign(new TFolder(), { path: p })),
+		];
+		return Object.assign(new TFolder(), { path, children });
 	}
 
 	app(): App {
@@ -75,6 +151,7 @@ export class FakeVault {
 			getAllFolders: () => [...this.folders].map((p) => this.folder(p)),
 			create: async (path: string, content: string) => {
 				this.created.push(path);
+				await this.beforeCreate?.(path);
 				const injected = this.failCreate?.(path);
 				if (injected) throw injected;
 				const key = (p: string) => p.normalize("NFC").toLowerCase();
@@ -109,6 +186,16 @@ export class FakeVault {
 			createFolder: async (path: string) => {
 				this.folders.add(path);
 			},
+			rename: async (file: TFile, newPath: string) => {
+				this.quietMoves.push(`${file.path} -> ${newPath}`);
+				this.moveEntry(file.path, newPath);
+			},
+			on: (name: string, listener: (...args: unknown[]) => void) => {
+				const list = this.listeners.get(name) ?? [];
+				list.push(listener);
+				this.listeners.set(name, list);
+				return { name, listener };
+			},
 			configDir: ".obsidian",
 			// The disk, which ignores letter case and accent composition, as on
 			// macOS, and holds files Obsidian has not listed yet.
@@ -123,6 +210,15 @@ export class FakeVault {
 				},
 				exists: async (path: string) =>
 					this.files.has(path) || this.folders.has(path),
+				/** What the disk holds directly in a folder, listed or not. */
+				list: async (path: string) => {
+					const inIt = (p: string) =>
+						p.startsWith(`${path}/`) && !p.slice(path.length + 1).includes("/");
+					return {
+						files: [...this.files.keys(), ...this.diskOnly].filter(inIt),
+						folders: [...this.folders].filter(inIt),
+					};
+				},
 			},
 		};
 		const metadataCache = {
@@ -149,6 +245,23 @@ export class FakeVault {
 				return { frontmatter };
 			},
 		};
-		return { vault, metadataCache, workspace: {} } as unknown as App;
+		const fileManager = {
+			renameFile: async (file: TFile, newPath: string) => {
+				this.linkUpdatingMoves.push(`${file.path} -> ${newPath}`);
+				this.moveEntry(file.path, newPath);
+			},
+			trashFile: async (file: TFile | TFolder) => {
+				this.trashed.push(file.path);
+				if (!this.folders.delete(file.path)) {
+					this.files.delete(file.path);
+				}
+			},
+		};
+		return {
+			vault,
+			metadataCache,
+			fileManager,
+			workspace: {},
+		} as unknown as App;
 	}
 }
