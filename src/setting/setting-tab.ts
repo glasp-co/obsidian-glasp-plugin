@@ -281,7 +281,9 @@ export class SettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("Bases folder")
 			.setDesc(
-				"Folder for the database views. Choosing another one moves the plugin's views there. Turn on the setting above to choose one.",
+				this.value.createBasesViews
+					? "Folder for the database views. Choosing another one moves the plugin's views there."
+					: "Folder for the database views. Turn on the setting above to choose one.",
 			)
 			.addDropdown((dropdown) => {
 				dropdown

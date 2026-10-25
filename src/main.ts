@@ -422,32 +422,35 @@ export default class ObsidianGlaspPlugin extends Plugin {
 	 * folder or a folder above it, the setting follows it (the views moved with
 	 * it), so the plugin does not create the folder again where it was. Checked
 	 * in turn against what is saved then, so two renames in a row end at the
-	 * last name. A move into a hidden folder is not followed, and nothing is
-	 * saved while data.json cannot be read or has not arrived yet: saving then
-	 * would replace every setting with the defaults (see onload).
+	 * last name. A move into a hidden folder is not followed. Before saving, a
+	 * change to data.json that Obsidian has not passed on yet is taken in, so
+	 * the save does not undo it; nothing is saved while data.json cannot be
+	 * read or has not arrived (saving then would replace every setting with the
+	 * defaults, see onload).
 	 */
 	private onVaultRename(file: TAbstractFile, oldPath: string): void {
 		if (!(file instanceof TFolder) || this.unloaded) {
 			return;
 		}
 		const newPath = file.path;
-		void this.withBasesQueue(async () => {
-			if (this.unloaded || !this.settingsFromFile) {
-				return;
-			}
+		const followed = (): string | null => {
 			const saved = resolveBasesFolder(this.store.get().basesFolder);
 			if (saved !== oldPath && !saved.startsWith(`${oldPath}/`)) {
-				return;
+				return null;
 			}
 			const next = newPath + saved.slice(oldPath.length);
-			if (
-				next === saved ||
+			return next === saved ||
 				next.split("/").some((part) => part.startsWith("."))
-			) {
+				? null
+				: next;
+		};
+		void this.withBasesQueue(async () => {
+			if (this.unloaded || followed() === null) {
 				return;
 			}
-			const onDisk = readStorageFile(await this.loadSettingsFile());
-			if (!onDisk.readable || onDisk.data === null) {
+			await this.onExternalSettingsChange();
+			const next = followed();
+			if (this.unloaded || !this.settingsFromFile || next === null) {
 				return;
 			}
 			await this.saveBasesFolder(next);
@@ -763,9 +766,18 @@ export default class ObsidianGlaspPlugin extends Plugin {
 				return;
 			}
 			let run = captured;
-			const moved = this.settingsFromFile
+			let moved = this.settingsFromFile
 				? this.findMovedBasesFolder(this.store.get())
 				: null;
+			if (moved) {
+				// As when following a folder: a change to data.json Obsidian has
+				// not passed on yet is taken in first, so the save does not undo it.
+				await this.onExternalSettingsChange();
+				if (!unchanged() || !this.settingsFromFile) {
+					return;
+				}
+				moved = this.findMovedBasesFolder(this.store.get());
+			}
 			if (moved) {
 				if (!(await this.saveBasesFolder(moved))) {
 					return;

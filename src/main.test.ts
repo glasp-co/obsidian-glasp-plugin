@@ -1185,7 +1185,7 @@ describe("Bases folder: staying where the user put it", () => {
 		expect(vault.folders.has("views")).toBe(false);
 	});
 
-	test("data.json arriving from a sync service is not overwritten by a folder moved before the plugin has read it", async () => {
+	test("data.json arriving from a sync service is taken in before a moved folder is followed, never replaced by the defaults", async () => {
 		const vault = new FakeVault(["Glasp", "Glasp Bases", "Notes"]);
 		const { plugin } = makePlugin(null, vault);
 		await plugin.onload();
@@ -1193,15 +1193,14 @@ describe("Bases folder: staying where the user put it", () => {
 		plugin.stored = { ...v040Data, accessToken: "REAL" };
 		vault.moveFolder("Glasp Bases", "Views");
 		await settle();
-		expect(plugin.saves).toEqual([]);
-		// Once read, a move of the Bases folder is followed and nothing else changes.
-		await plugin.onExternalSettingsChange();
-		vault.folders.add("Glasp Bases");
-		vault.moveFolder("Glasp Bases", "Notes/Views");
-		await settle();
+		expect(
+			plugin.saves.some(
+				(saved) => (saved as { accessToken?: string }).accessToken !== "REAL",
+			),
+		).toBe(false);
 		expect(plugin.saves.at(-1)).toMatchObject({
 			accessToken: "REAL",
-			basesFolder: "Notes/Views",
+			basesFolder: "Views",
 		});
 	});
 
@@ -1235,5 +1234,38 @@ describe("Bases folder: staying where the user put it", () => {
 			accessToken: "NEW",
 			basesFolder: "Notes/Glasp Bases",
 		});
+	});
+
+	test("following a moved folder does not undo a change from another device that Obsidian has not passed on yet", async () => {
+		const vault = new FakeVault(["Glasp", "Glasp Bases", "Notes"]);
+		const { plugin } = makePlugin(v040Data, vault);
+		await plugin.onload();
+		// Another device saved a new token; Obsidian has not told the plugin yet.
+		plugin.stored = { ...v040Data, accessToken: "NEW" };
+		vault.moveFolder("Glasp Bases", "Notes/Glasp Bases");
+		await settle();
+		expect(plugin.saves.at(-1)).toMatchObject({
+			accessToken: "NEW",
+			basesFolder: "Notes/Glasp Bases",
+		});
+		expect(plugin.store.get().accessToken).toBe("NEW");
+	});
+
+	test("taking over a moved folder does not undo a change from another device that Obsidian has not passed on yet", async () => {
+		emptyApi();
+		const vault = new FakeVault(["Glasp", "Clippings", "Clippings/Views"]);
+		vault.seed("Clippings/Views/Glasp Web Highlights.base", "view");
+		const { plugin } = makePlugin(
+			{ ...v040Data, summaryFolder: "Glasp" },
+			vault,
+		);
+		await plugin.onload();
+		plugin.stored = { ...v040Data, summaryFolder: "Glasp", template: "NEW" };
+		await plugin.importHighlights();
+		expect(plugin.store.get()).toMatchObject({
+			basesFolder: "Clippings/Views",
+			template: "NEW",
+		});
+		expect(plugin.stored).toMatchObject({ template: "NEW" });
 	});
 });
