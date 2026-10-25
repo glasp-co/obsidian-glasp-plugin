@@ -1,6 +1,8 @@
 import {
 	Plugin,
+	type TAbstractFile,
 	type TFile,
+	TFolder,
 	addIcon,
 	normalizePath,
 	parseYaml,
@@ -10,6 +12,7 @@ import { CoalescingRunner } from "./core/coalescing-runner";
 import { basesCommitPatch, cursorCommitPatch } from "./core/commit-rules";
 import {
 	type BaseSpec,
+	GLASP_BASES_FOLDER,
 	ImportHighlights,
 	bookmarkBase,
 	bookmarkSource,
@@ -21,7 +24,13 @@ import {
 	webHighlightSource,
 } from "./core/import-highlights";
 import {
+	BASE_FILENAMES,
+	resolveBasesFolder,
+} from "./core/import-highlights/bases";
+import {
+	type BasesRun,
 	type BasesSetting,
+	moveBasesViews,
 	syncBases,
 } from "./core/import-highlights/bases-sync";
 import type {
@@ -74,6 +83,22 @@ export default class ObsidianGlaspPlugin extends Plugin {
 	 * an import that starts while the change is still being saved sees it.
 	 */
 	private basesEnabled = true;
+	/** "Bases folder" as the user last set it, set at once like `basesEnabled`. */
+	private basesFolder = GLASP_BASES_FOLDER;
+	/**
+	 * The settings in memory are what data.json holds: read from it, or saved
+	 * to it since. Until then (data.json unreadable, or not arrived from a sync
+	 * service yet, or unreadable since) the plugin changes no setting on its own
+	 * (following a moved folder, taking one over): saving would replace the
+	 * file with what is in memory, the defaults included.
+	 */
+	private settingsFromFile = false;
+	/**
+	 * Everything that writes or moves Bases views (an import's Bases step, a
+	 * Bases folder change, following the folder when it is moved), one after
+	 * another, so a move never runs while a view is being written.
+	 */
+	private basesQueue: Promise<void> = Promise.resolve();
 	/** Notes this instance created, per source, by URL (see ImportHighlights). */
 	private sessionNotes = new Map<LastUpdatedKey, Map<string, TFile>>();
 	/** The next pass creates notes for every item that has none. */
@@ -116,6 +141,7 @@ export default class ObsidianGlaspPlugin extends Plugin {
 		useYamlParser(parseYaml);
 		const raw = await this.loadSettingsFile();
 		const file = readStorageFile(raw);
+		this.settingsFromFile = file.readable && file.data !== null;
 		this.store = new StateStore(normalizeStorageData(file.data), (state) =>
 			this.unloaded
 				? Promise.reject(new Error("The plugin was unloaded."))
@@ -123,7 +149,13 @@ export default class ObsidianGlaspPlugin extends Plugin {
 		);
 		this.lastSyncReport = this.store.get().lastSyncReport ?? null;
 		this.basesEnabled = this.store.get().createBasesViews;
+		this.basesFolder = resolveBasesFolder(this.store.get().basesFolder);
 		this.obApp = new ObsidianApp(this.app);
+		this.registerEvent(
+			this.app.vault.on("rename", (file, oldPath) =>
+				this.onVaultRename(file, oldPath),
+			),
+		);
 
 		this.settings = new SettingTab({ obApp: this.obApp, glaspPlugin: this });
 		this.addSettingTab(this.settings);
@@ -185,12 +217,18 @@ export default class ObsidianGlaspPlugin extends Plugin {
 		await this.store.replace(async (current) => {
 			const file = readStorageFile(await this.loadData());
 			if (!file.readable || !file.data) {
+				this.settingsFromFile = false;
 				return current;
 			}
+			this.settingsFromFile = true;
 			const fresh = normalizeStorageData(file.data);
 			if (!("createBasesViews" in file.data)) {
 				// Written by a device on 0.3.0, which drops this setting.
 				fresh.createBasesViews = current.createBasesViews;
+			}
+			if (!("basesFolder" in file.data) && current.basesFolder !== undefined) {
+				// Written by a device on 0.3.0, which drops this setting too.
+				fresh.basesFolder = current.basesFolder;
 			}
 			return sameData(fresh, current) ? current : fresh;
 		});
@@ -202,6 +240,12 @@ export default class ObsidianGlaspPlugin extends Plugin {
 			this.basesRevision++;
 			this.basesEnabled = state.createBasesViews;
 		}
+		// The device that chose it moved the views; the sync service brings them.
+		const basesFolder = resolveBasesFolder(state.basesFolder);
+		if (basesFolder !== this.basesFolder) {
+			this.basesRevision++;
+			this.basesFolder = basesFolder;
+		}
 		this.lastSyncReport = state.lastSyncReport ?? this.lastSyncReport;
 	}
 
@@ -209,6 +253,7 @@ export default class ObsidianGlaspPlugin extends Plugin {
 	async updateSettings(patch: StatePatch<StorageData>): Promise<void> {
 		try {
 			await this.store.update(patch);
+			this.settingsFromFile = true;
 		} catch (e) {
 			if (this.unloaded) return;
 			console.warn("Glasp: could not save the settings", e);
@@ -251,6 +296,222 @@ export default class ObsidianGlaspPlugin extends Plugin {
 		await this.updateSettings({ createBasesViews: value });
 		// What was saved (unchanged if the save failed).
 		this.basesEnabled = this.store.get().createBasesViews;
+	}
+
+	/** Run `task` after every Bases write or move asked for before it. */
+	private withBasesQueue(task: () => Promise<void>): Promise<void> {
+		const run = this.basesQueue.then(task, task);
+		this.basesQueue = run.catch(() => {});
+		return run;
+	}
+
+	/**
+	 * Choose the "Bases folder". The change waits for any Bases write in flight
+	 * (see basesQueue) and starts from the folder last saved, so choosing
+	 * several in a row leaves every view in the last one; saving it bumps the
+	 * revision, so an import that started before writes nothing. Once saved,
+	 * and while "Create Bases views" is on, the plugin's views in the old folder
+	 * are moved to the new one (when off, existing views are left alone, as that
+	 * setting says; the settings tab offers the choice only while it is on).
+	 */
+	setBasesFolder(value: string): Promise<void> {
+		return this.withBasesQueue(() => this.changeBasesFolder(value));
+	}
+
+	private async changeBasesFolder(value: string): Promise<void> {
+		if (this.unloaded) {
+			return;
+		}
+		const saved = resolveBasesFolder(this.store.get().basesFolder);
+		const from = this.obApp.resolveFolder(saved) ?? saved;
+		const to = resolveBasesFolder(value);
+		if (to === from) {
+			return;
+		}
+		if (!(await this.saveBasesFolder(to))) {
+			return;
+		}
+		if (!this.basesEnabled || this.unloaded) {
+			return;
+		}
+		const left = await this.moveViews(from, to, "user");
+		if (left.length && !this.unloaded) {
+			new ObsidianNotice(
+				`Could not move ${left.join(", ")} to "${to}" (a file with the same name is there, or the move failed). ${left.length === 1 ? "It is" : "They are"} still in "${from}".`,
+			);
+		}
+	}
+
+	/**
+	 * Save `folder` as the Bases folder. The revision is bumped, so an import
+	 * that started before records nothing for the old folder; if the save fails
+	 * the folder that is saved stays in use. True when saved.
+	 */
+	private async saveBasesFolder(folder: string): Promise<boolean> {
+		this.basesRevision++;
+		this.basesFolder = folder;
+		await this.updateSettings({ basesFolder: folder });
+		// What is saved: the save may have failed, or a change from another
+		// device may have arrived meanwhile.
+		const saved = resolveBasesFolder(this.store.get().basesFolder);
+		if (saved !== this.basesFolder) {
+			this.basesRevision++;
+			this.basesFolder = saved;
+		}
+		return saved === folder;
+	}
+
+	/**
+	 * Move the plugin's views from `from` to `to`, never over a file. Every view
+	 * name is tried, not only the recorded ones: a view an import wrote just
+	 * before a change was not recorded, and the next sync records it where it
+	 * now is without writing it again. A move the user asked for updates links
+	 * as Obsidian does (and may ask about them); one the plugin makes on its own
+	 * during a sync never asks. Returns the views left where they were.
+	 */
+	private async moveViews(
+		from: string,
+		to: string,
+		mover: "user" | "sync",
+	): Promise<string[]> {
+		const state = this.store.get();
+		const filenames = [
+			...new Set([...BASE_FILENAMES, ...Object.keys(state.basesCreated ?? {})]),
+		];
+		const mayRemove = this.mayRemoveBasesFolder(from, state);
+		const { left } = await moveBasesViews(filenames, from, to, {
+			isFile: (path) => this.obApp.isFile(path),
+			exists: (path) => this.obApp.exists(path),
+			ensureFolder: (path) => this.obApp.ensureFolder(path),
+			move: (source, target) =>
+				mover === "user"
+					? this.obApp.moveFile(source, target)
+					: this.obApp.moveFileQuietly(source, target),
+			isEmptyFolder: (path) => this.obApp.isEmptyFolder(path),
+			trashFolder: async (path) => {
+				if (mayRemove) {
+					await this.obApp.trashEmptyFolder(path);
+				}
+			},
+		});
+		return left;
+	}
+
+	/**
+	 * Only the plugin's own default folder is ever removed, and not when a
+	 * source's notes go there or below it.
+	 */
+	private mayRemoveBasesFolder(
+		folder: string,
+		state: Readonly<StorageData>,
+	): boolean {
+		const outputs = [
+			state.folder,
+			state.kindleFolder,
+			state.summaryFolder,
+			state.bookmarkFolder,
+		].filter(Boolean);
+		return (
+			folder === GLASP_BASES_FOLDER &&
+			!outputs.some((out) => out === folder || out.startsWith(`${folder}/`))
+		);
+	}
+
+	/**
+	 * The user moved or renamed a folder in Obsidian. When it is the Bases
+	 * folder or a folder above it, the setting follows it (the views moved with
+	 * it), so the plugin does not create the folder again where it was. Checked
+	 * in turn against what is saved then, so two renames in a row end at the
+	 * last name. A move into a hidden folder is not followed. Before saving, a
+	 * change to data.json that Obsidian has not passed on yet is taken in, so
+	 * the save does not undo it; nothing is saved while data.json cannot be
+	 * read or has not arrived (saving then would replace every setting with the
+	 * defaults, see onload).
+	 */
+	private onVaultRename(file: TAbstractFile, oldPath: string): void {
+		if (!(file instanceof TFolder) || this.unloaded) {
+			return;
+		}
+		const newPath = file.path;
+		const followed = (): string | null => {
+			const saved = resolveBasesFolder(this.store.get().basesFolder);
+			if (saved !== oldPath && !saved.startsWith(`${oldPath}/`)) {
+				return null;
+			}
+			const next = newPath + saved.slice(oldPath.length);
+			return next === saved ||
+				next.split("/").some((part) => part.startsWith("."))
+				? null
+				: next;
+		};
+		void this.withBasesQueue(async () => {
+			if (this.unloaded || followed() === null) {
+				return;
+			}
+			await this.onExternalSettingsChange();
+			const next = followed();
+			if (this.unloaded || !this.settingsFromFile || next === null) {
+				return;
+			}
+			await this.saveBasesFolder(next);
+		});
+	}
+
+	/**
+	 * For a vault that never chose a Bases folder: when every recorded view is
+	 * found, once each, all in one folder other than Glasp Bases (the user moved
+	 * that folder before this setting existed), that folder is the one to use.
+	 * A view still in Glasp Bases makes two folders, so nothing is taken over.
+	 */
+	private findMovedBasesFolder(state: Readonly<StorageData>): string | null {
+		if (state.basesFolder !== undefined) {
+			return null;
+		}
+		const recorded = Object.keys(state.basesCreated ?? {});
+		// The usual case, answered without reading the whole vault: the views
+		// are still in Glasp Bases (which would make two folders anyway).
+		if (
+			!recorded.length ||
+			recorded.some((name) =>
+				this.obApp.isFile(`${GLASP_BASES_FOLDER}/${name}`),
+			)
+		) {
+			return null;
+		}
+		const wanted = new Set(recorded);
+		const found = new Map<string, string[]>();
+		for (const file of this.obApp.getAllFiles()) {
+			const at = file.path.lastIndexOf("/");
+			const name = file.path.slice(at + 1);
+			if (wanted.has(name)) {
+				found.set(name, [
+					...(found.get(name) ?? []),
+					file.path.slice(0, Math.max(at, 0)),
+				]);
+			}
+		}
+		// Every recorded view, so one copy left somewhere is not taken for a move.
+		if (found.size !== recorded.length) {
+			return null;
+		}
+		const parents = new Set<string>();
+		for (const folders of found.values()) {
+			if (folders.length > 1) {
+				return null;
+			}
+			parents.add(folders[0]);
+		}
+		if (parents.size !== 1) {
+			return null;
+		}
+		const [folder] = parents;
+		// Not the top of the vault, which cannot be the Bases folder.
+		return folder && folder !== GLASP_BASES_FOLDER ? folder : null;
+	}
+
+	/** The "Bases folder" in use: the saved one, or `Glasp Bases`. */
+	currentBasesFolder(): string {
+		return this.basesFolder;
 	}
 
 	async setUpdateFrequency(value: UpdateFrequency): Promise<void> {
@@ -373,9 +634,10 @@ export default class ObsidianGlaspPlugin extends Plugin {
 		atStart: Readonly<StorageData>,
 		backfill: boolean,
 	) {
-		const basesAtStart: BasesSetting = {
+		const basesAtStart: BasesRun = {
 			enabled: this.basesEnabled,
 			revision: this.basesRevision,
+			folder: this.basesFolder,
 		};
 
 		const importer = new ImportHighlights({
@@ -471,7 +733,7 @@ export default class ObsidianGlaspPlugin extends Plugin {
 		await this.saveReport(results);
 	}
 
-	private async ensureBases(storageData: StorageData, captured: BasesSetting) {
+	private async ensureBases(storageData: StorageData, captured: BasesRun) {
 		const specs: BaseSpec[] = [];
 		if (storageData.folder) {
 			specs.push(webHighlightBase(storageData.folder));
@@ -493,11 +755,73 @@ export default class ObsidianGlaspPlugin extends Plugin {
 			enabled: this.basesEnabled && !this.unloaded,
 			revision: this.basesRevision,
 		});
+		const unchanged = () => {
+			const live = liveSetting();
+			return (
+				captured.enabled && live.enabled && live.revision === captured.revision
+			);
+		};
+		await this.withBasesQueue(async () => {
+			if (!unchanged()) {
+				return;
+			}
+			let run = captured;
+			let moved = this.settingsFromFile
+				? this.findMovedBasesFolder(this.store.get())
+				: null;
+			if (moved) {
+				// As when following a folder: a change to data.json Obsidian has
+				// not passed on yet is taken in first, so the save does not undo it.
+				await this.onExternalSettingsChange();
+				if (!unchanged() || !this.settingsFromFile) {
+					return;
+				}
+				moved = this.findMovedBasesFolder(this.store.get());
+			}
+			if (moved) {
+				if (!(await this.saveBasesFolder(moved))) {
+					return;
+				}
+				// Saving bumped the revision; this run is the one that made it.
+				run = { ...captured, folder: moved, revision: this.basesRevision };
+			}
+			// The folder as it exists, when only letter case or accent encoding
+			// differ (a name synced from another device can), so it is not
+			// created a second time.
+			run = {
+				...run,
+				folder: this.obApp.resolveFolder(run.folder) ?? run.folder,
+			};
+			if (run.folder !== GLASP_BASES_FOLDER) {
+				// Views left in Glasp Bases (a move cut short, or a device on an
+				// earlier version wrote there) go where the user wants them.
+				// One whose name is taken there stays (said nowhere: it would be
+				// said again at every sync).
+				await this.moveViews(GLASP_BASES_FOLDER, run.folder, "sync");
+			}
+			await this.syncBasesViews(specs, run, liveSetting);
+		});
+	}
+
+	private async syncBasesViews(
+		specs: BaseSpec[],
+		captured: BasesRun,
+		liveSetting: () => BasesSetting,
+	) {
 		await syncBases(specs, captured, {
 			ensureFolder: (path) => this.obApp.ensureFolder(path),
 			createFileIfAbsent: (path, content) =>
 				this.obApp.createFileIfAbsent(path, content),
 			writeFile: (path, content) => this.obApp.writeFile(path, content),
+			readFile: (path) => this.obApp.readFileAt(path),
+			parseYaml: (text) => parseYaml(text),
+			leftAsIs: (path, previous, next) => {
+				if (!this.unloaded) {
+					new ObsidianNotice(
+						`"${path}" was not updated: it has no filter for "${previous}" to change (it was edited, or is not a Glasp view), so it does not list the notes in "${next}".`,
+					);
+				}
+			},
 			recorded: () => this.store.get().basesCreated ?? {},
 			live: liveSetting,
 			commit: (records, at) =>

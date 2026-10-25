@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { FakeVault } from "../test/fake-vault";
 import { shownNotices } from "../test/obsidian-stub";
+import { summaryBase } from "./core/import-highlights";
 import { GlaspAPIClient } from "./glasp-api/glasp-api-client";
 import ObsidianGlaspPlugin from "./main";
 
@@ -561,5 +562,710 @@ describe("plugin lifecycle", () => {
 		const { plugin } = makePlugin({ ...v040Data, updateFrequency: "5" });
 		await plugin.onload();
 		expect(plugin.store.get().updateFrequency).toBe("1440");
+	});
+});
+
+describe("Bases folder", () => {
+	const emptyApi = () =>
+		vi.spyOn(GlaspAPIClient.prototype, "get").mockResolvedValue({
+			results: [],
+			nextPageCursor: null,
+		} as never);
+
+	test("a data.json without a Bases folder uses 'Glasp Bases' and is not rewritten", async () => {
+		emptyApi();
+		const vault = new FakeVault(["Glasp"]);
+		const { plugin } = makePlugin(
+			{ ...v040Data, summaryFolder: "Glasp" },
+			vault,
+		);
+		await plugin.onload();
+		await plugin.importHighlights();
+		expect(vault.files.has("Glasp Bases/Glasp Summaries.base")).toBe(true);
+		expect(plugin.store.get().basesFolder).toBeUndefined();
+	});
+
+	test("new views are created in the chosen folder, and nothing at the top of the vault", async () => {
+		emptyApi();
+		const vault = new FakeVault(["Glasp", "Clippings"]);
+		const { plugin } = makePlugin(
+			{ ...v040Data, summaryFolder: "Glasp", basesFolder: "Clippings" },
+			vault,
+		);
+		await plugin.onload();
+		await plugin.importHighlights();
+		expect(vault.files.has("Clippings/Glasp Summaries.base")).toBe(true);
+		expect(vault.folders.has("Glasp Bases")).toBe(false);
+	});
+
+	test("choosing another folder moves the plugin's views there and trashes the folder they left empty", async () => {
+		const vault = new FakeVault(["Glasp", "Glasp Bases", "Clippings"]);
+		vault.seed("Glasp Bases/Glasp Web Highlights.base", "view");
+		const { plugin } = makePlugin(v040Data, vault);
+		await plugin.onload();
+		await plugin.setBasesFolder("Clippings");
+		expect(plugin.store.get().basesFolder).toBe("Clippings");
+		expect(
+			vault.files.get("Clippings/Glasp Web Highlights.base")?.content,
+		).toBe("view");
+		expect(vault.files.has("Glasp Bases/Glasp Web Highlights.base")).toBe(
+			false,
+		);
+		expect(vault.folders.has("Glasp Bases")).toBe(false);
+		expect(vault.trashed).toEqual(["Glasp Bases"]);
+	});
+
+	test("with Create Bases views off, choosing a folder moves nothing", async () => {
+		const vault = new FakeVault(["Glasp", "Glasp Bases", "Clippings"]);
+		vault.seed("Glasp Bases/Glasp Web Highlights.base", "view");
+		const { plugin } = makePlugin(
+			{ ...v040Data, createBasesViews: false },
+			vault,
+		);
+		await plugin.onload();
+		await plugin.setBasesFolder("Clippings");
+		expect(plugin.store.get().basesFolder).toBe("Clippings");
+		expect(vault.files.has("Glasp Bases/Glasp Web Highlights.base")).toBe(true);
+		expect(vault.trashed).toEqual([]);
+	});
+
+	test("a view already at the destination is not overwritten", async () => {
+		const vault = new FakeVault(["Glasp", "Glasp Bases", "Clippings"]);
+		vault.seed("Glasp Bases/Glasp Web Highlights.base", "old");
+		vault.seed("Clippings/Glasp Web Highlights.base", "mine");
+		const { plugin } = makePlugin(v040Data, vault);
+		await plugin.onload();
+		await plugin.setBasesFolder("Clippings");
+		expect(
+			vault.files.get("Clippings/Glasp Web Highlights.base")?.content,
+		).toBe("mine");
+		expect(vault.files.has("Glasp Bases/Glasp Web Highlights.base")).toBe(true);
+		expect(vault.trashed).toEqual([]);
+	});
+
+	test("a data.json written by a device on 0.3.0 keeps this device's Bases folder", async () => {
+		const { plugin } = makePlugin({ ...v040Data, basesFolder: "Clippings" });
+		await plugin.onload();
+		const { createBasesViews: _c, ...from030 } = v040Data;
+		plugin.stored = { ...from030, folder: "Elsewhere" };
+		await plugin.onExternalSettingsChange();
+		expect(plugin.store.get()).toMatchObject({
+			folder: "Elsewhere",
+			basesFolder: "Clippings",
+		});
+	});
+
+	test("a Bases folder chosen on another device is used by the next sync", async () => {
+		emptyApi();
+		const vault = new FakeVault(["Glasp", "Clippings"]);
+		const { plugin } = makePlugin(
+			{ ...v040Data, summaryFolder: "Glasp" },
+			vault,
+		);
+		await plugin.onload();
+		plugin.stored = {
+			...v040Data,
+			summaryFolder: "Glasp",
+			basesFolder: "Clippings",
+		};
+		await plugin.onExternalSettingsChange();
+		await plugin.importHighlights();
+		expect(vault.files.has("Clippings/Glasp Summaries.base")).toBe(true);
+		expect(vault.folders.has("Glasp Bases")).toBe(false);
+	});
+
+	test("a view written but not recorded (the folder was changed mid-sync) is moved too, and recorded by the next sync without a rewrite", async () => {
+		emptyApi();
+		const vault = new FakeVault(["Glasp", "Glasp Bases", "Clippings"]);
+		vault.seed("Glasp Bases/Glasp Summaries.base", "unrecorded");
+		const { plugin } = makePlugin(
+			{ ...v040Data, summaryFolder: "Glasp", basesCreated: {} },
+			vault,
+		);
+		await plugin.onload();
+		await plugin.setBasesFolder("Clippings");
+		expect(vault.files.get("Clippings/Glasp Summaries.base")?.content).toBe(
+			"unrecorded",
+		);
+		expect(vault.folders.has("Glasp Bases")).toBe(false);
+		await plugin.importHighlights();
+		expect(vault.modified).not.toContain("Clippings/Glasp Summaries.base");
+		expect(plugin.store.get().basesCreated).toMatchObject({
+			"Glasp Summaries.base": "Glasp",
+		});
+		expect(vault.folders.has("Glasp Bases")).toBe(false);
+	});
+
+	test("folders chosen one after another without waiting end with every view in the last one", async () => {
+		const vault = new FakeVault([
+			"Glasp",
+			"Glasp Bases",
+			"Archive",
+			"Books",
+			"Clippings",
+		]);
+		vault.seed("Glasp Bases/Glasp Web Highlights.base", "view");
+		const { plugin } = makePlugin(v040Data, vault);
+		await plugin.onload();
+		await Promise.all([
+			plugin.setBasesFolder("Archive"),
+			plugin.setBasesFolder("Books"),
+			plugin.setBasesFolder("Clippings"),
+		]);
+		expect(plugin.store.get().basesFolder).toBe("Clippings");
+		expect(plugin.currentBasesFolder()).toBe("Clippings");
+		expect([...vault.files.keys()].filter((p) => p.endsWith(".base"))).toEqual([
+			"Clippings/Glasp Web Highlights.base",
+		]);
+		expect(vault.trashed).toEqual(["Glasp Bases"]);
+	});
+
+	test("a folder of the user's is never trashed, even when the move empties it", async () => {
+		const vault = new FakeVault(["Glasp", "Bookmarks", "Views"]);
+		vault.seed("Bookmarks/Glasp Bookmarks.base", "view");
+		const { plugin } = makePlugin(
+			{
+				...v040Data,
+				bookmarkFolder: "Bookmarks",
+				basesFolder: "Bookmarks",
+				basesCreated: { "Glasp Bookmarks.base": "Bookmarks" },
+			},
+			vault,
+		);
+		await plugin.onload();
+		await plugin.setBasesFolder("Views");
+		expect(vault.files.has("Views/Glasp Bookmarks.base")).toBe(true);
+		expect(vault.folders.has("Bookmarks")).toBe(true);
+		expect(vault.trashed).toEqual([]);
+	});
+
+	test("Glasp Bases is kept while the disk still holds a file Obsidian does not list", async () => {
+		const vault = new FakeVault(["Glasp", "Glasp Bases", "Clippings"]);
+		vault.seed("Glasp Bases/Glasp Web Highlights.base", "view");
+		vault.diskOnly.add("Glasp Bases/.DS_Store");
+		const { plugin } = makePlugin(v040Data, vault);
+		await plugin.onload();
+		await plugin.setBasesFolder("Clippings");
+		expect(vault.files.has("Clippings/Glasp Web Highlights.base")).toBe(true);
+		expect(vault.folders.has("Glasp Bases")).toBe(true);
+		expect(vault.trashed).toEqual([]);
+	});
+
+	test("Glasp Bases is kept when it is also a source's output folder", async () => {
+		const vault = new FakeVault(["Glasp Bases", "Clippings"]);
+		vault.seed("Glasp Bases/Glasp Web Highlights.base", "view");
+		const { plugin } = makePlugin(
+			{
+				...v040Data,
+				folder: "Glasp Bases",
+				basesCreated: { "Glasp Web Highlights.base": "Glasp Bases" },
+			},
+			vault,
+		);
+		await plugin.onload();
+		await plugin.setBasesFolder("Clippings");
+		expect(vault.files.has("Clippings/Glasp Web Highlights.base")).toBe(true);
+		expect(vault.folders.has("Glasp Bases")).toBe(true);
+		expect(vault.trashed).toEqual([]);
+	});
+
+	const gatedApi = () => {
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		vi.spyOn(GlaspAPIClient.prototype, "get").mockImplementation(async () => {
+			await gate;
+			return { results: [], nextPageCursor: null } as never;
+		});
+		return () => release();
+	};
+
+	test("an import running when the folder is chosen writes no view in the old folder", async () => {
+		const release = gatedApi();
+		const vault = new FakeVault(["Glasp", "Clippings"]);
+		const { plugin } = makePlugin(
+			{ ...v040Data, summaryFolder: "Glasp" },
+			vault,
+		);
+		await plugin.onload();
+		const running = plugin.importHighlights();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		await plugin.setBasesFolder("Clippings");
+		release();
+		await running;
+		expect(vault.folders.has("Glasp Bases")).toBe(false);
+		expect(
+			[...vault.files.keys()].some((p) => p.startsWith("Glasp Bases/")),
+		).toBe(false);
+	});
+
+	test("an import running when another device chooses the folder writes no view in the old folder", async () => {
+		const release = gatedApi();
+		const vault = new FakeVault(["Glasp", "Clippings"]);
+		const { plugin } = makePlugin(
+			{ ...v040Data, summaryFolder: "Glasp" },
+			vault,
+		);
+		await plugin.onload();
+		const running = plugin.importHighlights();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		plugin.stored = {
+			...v040Data,
+			summaryFolder: "Glasp",
+			basesFolder: "Clippings",
+		};
+		await plugin.onExternalSettingsChange();
+		release();
+		await running;
+		expect(vault.folders.has("Glasp Bases")).toBe(false);
+	});
+
+	test("a file of the user's own with a view's name, in the chosen folder, survives a later source folder change", async () => {
+		emptyApi();
+		const vault = new FakeVault([
+			"Glasp",
+			"Glasp Bases",
+			"Dashboards",
+			"Summaries",
+		]);
+		vault.seed(
+			"Glasp Bases/Glasp Summaries.base",
+			summaryBase("Glasp").content,
+		);
+		vault.seed("Dashboards/Glasp Summaries.base", "MY OWN VIEW");
+		const { plugin } = makePlugin(
+			{
+				...v040Data,
+				summaryFolder: "Glasp",
+				basesCreated: {
+					"Glasp Web Highlights.base": "Glasp",
+					"Glasp Summaries.base": "Glasp",
+				},
+			},
+			vault,
+		);
+		await plugin.onload();
+		await plugin.setBasesFolder("Dashboards");
+		expect(shownNotices.join("\n")).toMatch(
+			/Glasp: Could not move Glasp Summaries\.base/,
+		);
+		expect(shownNotices.join("\n")).not.toMatch(/Glasp: Glasp:/);
+		await plugin.updateSettings({ summaryFolder: "Summaries" });
+		await plugin.importHighlights();
+		expect(vault.files.get("Dashboards/Glasp Summaries.base")?.content).toBe(
+			"MY OWN VIEW",
+		);
+	});
+
+	test("an unchanged view in the chosen folder is rewritten on a source folder change", async () => {
+		emptyApi();
+		const vault = new FakeVault(["Glasp", "Clippings", "Summaries"]);
+		vault.seed("Clippings/Glasp Summaries.base", summaryBase("Glasp").content);
+		const { plugin } = makePlugin(
+			{
+				...v040Data,
+				summaryFolder: "Summaries",
+				basesFolder: "Clippings",
+				basesCreated: {
+					"Glasp Web Highlights.base": "Glasp",
+					"Glasp Summaries.base": "Glasp",
+				},
+			},
+			vault,
+		);
+		await plugin.onload();
+		await plugin.importHighlights();
+		expect(vault.files.get("Clippings/Glasp Summaries.base")?.content).toBe(
+			summaryBase("Summaries").content,
+		);
+	});
+});
+
+describe("Bases folder: staying where the user put it", () => {
+	const emptyApi = () =>
+		vi.spyOn(GlaspAPIClient.prototype, "get").mockResolvedValue({
+			results: [],
+			nextPageCursor: null,
+		} as never);
+	const settle = async () => {
+		for (let i = 0; i < 5; i++) {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		}
+	};
+	const basePaths = (vault: FakeVault) =>
+		[...vault.files.keys()].filter((p) => p.endsWith(".base")).sort();
+
+	test("a folder chosen while an import is writing a view: the view ends in the new folder, none is left behind", async () => {
+		emptyApi();
+		const vault = new FakeVault(["Glasp", "Clippings"]);
+		const { plugin } = makePlugin(
+			{ ...v040Data, summaryFolder: "Glasp", basesCreated: {} },
+			vault,
+		);
+		await plugin.onload();
+		let choosing: Promise<void> | undefined;
+		vault.beforeCreate = async (path) => {
+			if (path === "Glasp Bases/Glasp Web Highlights.base" && !choosing) {
+				choosing = plugin.setBasesFolder("Clippings");
+				await new Promise((resolve) => setTimeout(resolve, 5));
+			}
+		};
+		await plugin.importHighlights();
+		await choosing;
+		vault.beforeCreate = undefined;
+		await plugin.importHighlights();
+		expect(basePaths(vault)).toEqual([
+			"Clippings/Glasp Summaries.base",
+			"Clippings/Glasp Web Highlights.base",
+		]);
+		expect(vault.folders.has("Glasp Bases")).toBe(false);
+	});
+
+	test("with another folder chosen, a sync moves views it finds in Glasp Bases there, without asking about links", async () => {
+		emptyApi();
+		const vault = new FakeVault(["Glasp", "Glasp Bases", "Clippings"]);
+		vault.seed("Glasp Bases/Glasp Web Highlights.base", "view");
+		const { plugin } = makePlugin(
+			{ ...v040Data, basesFolder: "Clippings" },
+			vault,
+		);
+		await plugin.onload();
+		await plugin.importHighlights();
+		expect(basePaths(vault)).toEqual(["Clippings/Glasp Web Highlights.base"]);
+		expect(vault.folders.has("Glasp Bases")).toBe(false);
+		expect(vault.linkUpdatingMoves).toEqual([]);
+		expect(vault.quietMoves).toEqual([
+			"Glasp Bases/Glasp Web Highlights.base -> Clippings/Glasp Web Highlights.base",
+		]);
+	});
+
+	test("with Create Bases views off, a sync leaves Glasp Bases alone", async () => {
+		emptyApi();
+		const vault = new FakeVault(["Glasp", "Glasp Bases", "Clippings"]);
+		vault.seed("Glasp Bases/Glasp Web Highlights.base", "view");
+		const { plugin } = makePlugin(
+			{ ...v040Data, basesFolder: "Clippings", createBasesViews: false },
+			vault,
+		);
+		await plugin.onload();
+		await plugin.importHighlights();
+		expect(basePaths(vault)).toEqual(["Glasp Bases/Glasp Web Highlights.base"]);
+	});
+
+	test("a view in Glasp Bases whose name is taken in the chosen folder stays, and so does Glasp Bases", async () => {
+		emptyApi();
+		const vault = new FakeVault(["Glasp", "Glasp Bases", "Clippings"]);
+		vault.seed("Glasp Bases/Glasp Web Highlights.base", "old");
+		vault.seed("Clippings/Glasp Web Highlights.base", "new");
+		const { plugin } = makePlugin(
+			{ ...v040Data, basesFolder: "Clippings" },
+			vault,
+		);
+		await plugin.onload();
+		await plugin.importHighlights();
+		expect(
+			vault.files.get("Clippings/Glasp Web Highlights.base")?.content,
+		).toBe("new");
+		expect(
+			vault.files.get("Glasp Bases/Glasp Web Highlights.base")?.content,
+		).toBe("old");
+	});
+
+	test("moving the Bases folder in Obsidian takes the setting with it", async () => {
+		emptyApi();
+		const vault = new FakeVault(["Glasp", "Glasp Bases", "Clippings"]);
+		vault.seed("Glasp Bases/Glasp Web Highlights.base", "view");
+		const { plugin } = makePlugin(
+			{ ...v040Data, summaryFolder: "Glasp" },
+			vault,
+		);
+		await plugin.onload();
+		vault.moveFolder("Glasp Bases", "Clippings/Glasp Bases");
+		await settle();
+		expect(plugin.store.get().basesFolder).toBe("Clippings/Glasp Bases");
+		await plugin.importHighlights();
+		expect(basePaths(vault)).toEqual([
+			"Clippings/Glasp Bases/Glasp Summaries.base",
+			"Clippings/Glasp Bases/Glasp Web Highlights.base",
+		]);
+		expect(vault.folders.has("Glasp Bases")).toBe(false);
+	});
+
+	test("renaming a folder above the Bases folder takes the setting with it", async () => {
+		const vault = new FakeVault(["Glasp", "Notes", "Notes/Views"]);
+		const { plugin } = makePlugin(
+			{ ...v040Data, basesFolder: "Notes/Views" },
+			vault,
+		);
+		await plugin.onload();
+		vault.moveFolder("Notes", "Reading");
+		await settle();
+		expect(plugin.store.get().basesFolder).toBe("Reading/Views");
+	});
+
+	test("a move into a hidden folder, or of another folder, changes nothing", async () => {
+		const vault = new FakeVault(["Glasp", "Glasp Bases", "Other"]);
+		const { plugin } = makePlugin(v040Data, vault);
+		await plugin.onload();
+		vault.moveFolder("Other", "Elsewhere");
+		vault.moveFolder("Glasp Bases", ".trash/Glasp Bases");
+		await settle();
+		expect(plugin.store.get().basesFolder).toBeUndefined();
+		expect(plugin.saves).toEqual([]);
+	});
+
+	test("after an update, views the user had moved together into one folder make it the Bases folder", async () => {
+		emptyApi();
+		const vault = new FakeVault(["Glasp", "Clippings", "Clippings/Views"]);
+		vault.seed("Clippings/Views/Glasp Web Highlights.base", "view");
+		const { plugin } = makePlugin(
+			{ ...v040Data, summaryFolder: "Glasp" },
+			vault,
+		);
+		await plugin.onload();
+		await plugin.importHighlights();
+		expect(plugin.store.get().basesFolder).toBe("Clippings/Views");
+		expect(basePaths(vault)).toEqual([
+			"Clippings/Views/Glasp Summaries.base",
+			"Clippings/Views/Glasp Web Highlights.base",
+		]);
+		expect(vault.folders.has("Glasp Bases")).toBe(false);
+	});
+
+	test("no folder is taken over when the views are in different folders, or one is also in Glasp Bases, or a folder was chosen", async () => {
+		emptyApi();
+		const cases: [Record<string, unknown>, string[], string[]][] = [
+			[
+				{},
+				["A", "B"],
+				["A/Glasp Web Highlights.base", "B/Glasp Summaries.base"],
+			],
+			[
+				{},
+				["A", "Glasp Bases"],
+				["A/Glasp Web Highlights.base", "Glasp Bases/Glasp Summaries.base"],
+			],
+			[
+				{},
+				["A", "B"],
+				["A/Glasp Web Highlights.base", "B/Glasp Web Highlights.base"],
+			],
+			[
+				{ basesFolder: "Chosen" },
+				["A", "Chosen"],
+				["A/Glasp Web Highlights.base"],
+			],
+			// Moved to the top of the vault, which cannot be the Bases folder.
+			[{}, [], ["Glasp Web Highlights.base"]],
+			// Never moved: the views are in Glasp Bases, and nothing is saved.
+			[
+				{},
+				["Glasp Bases"],
+				[
+					"Glasp Bases/Glasp Web Highlights.base",
+					"Glasp Bases/Glasp Summaries.base",
+				],
+			],
+		];
+		for (const [extra, folders, files] of cases) {
+			const vault = new FakeVault(["Glasp", ...folders]);
+			for (const f of files) vault.seed(f, "view");
+			const { plugin } = makePlugin(
+				{
+					...v040Data,
+					summaryFolder: "Glasp",
+					basesCreated: {
+						"Glasp Web Highlights.base": "Glasp",
+						"Glasp Summaries.base": "Glasp",
+					},
+					...extra,
+				},
+				vault,
+			);
+			await plugin.onload();
+			await plugin.importHighlights();
+			expect(plugin.store.get().basesFolder).toBe(
+				(extra.basesFolder as string | undefined) ?? undefined,
+			);
+		}
+	});
+
+	test("a folder chosen in the settings wins over a move of the old folder made right after", async () => {
+		const vault = new FakeVault([
+			"Glasp",
+			"Glasp Bases",
+			"Clippings",
+			"Archive",
+		]);
+		const { plugin } = makePlugin(v040Data, vault);
+		await plugin.onload();
+		const choosing = plugin.setBasesFolder("Clippings");
+		vault.moveFolder("Glasp Bases", "Archive/Glasp Bases");
+		await choosing;
+		await settle();
+		expect(plugin.store.get().basesFolder).toBe("Clippings");
+		expect(plugin.currentBasesFolder()).toBe("Clippings");
+	});
+
+	test("a folder moved while data.json cannot be read, or has not arrived yet, writes nothing", async () => {
+		for (const stored of [undefined, null]) {
+			const vault = new FakeVault(["Glasp", "Glasp Bases", "Notes"]);
+			if (stored === undefined) {
+				vault.seed(
+					".obsidian/plugins/glasp/data.json",
+					"<<<<<<< a sync conflict",
+				);
+			}
+			const { plugin } = makePlugin(stored, vault);
+			await plugin.onload();
+			vault.moveFolder("Glasp Bases", "Notes/Glasp Bases");
+			await settle();
+			expect(plugin.saves).toEqual([]);
+		}
+	});
+
+	test("renamed twice in a row, the setting ends at the last name", async () => {
+		const vault = new FakeVault(["Glasp", "Glasp Bases"]);
+		const { plugin } = makePlugin(v040Data, vault);
+		await plugin.onload();
+		vault.moveFolder("Glasp Bases", "Views");
+		vault.moveFolder("Views", "Glasp Views");
+		await settle();
+		expect(plugin.store.get().basesFolder).toBe("Glasp Views");
+		expect(plugin.currentBasesFolder()).toBe("Glasp Views");
+	});
+
+	test("a change from another device arriving while a folder is saved: the folder in use is the one saved", async () => {
+		const vault = new FakeVault(["Glasp", "Glasp Bases", "Clippings", "Other"]);
+		vault.seed("Glasp Bases/Glasp Web Highlights.base", "view");
+		const { plugin } = makePlugin(v040Data, vault);
+		await plugin.onload();
+		const choosing = plugin.setBasesFolder("Clippings");
+		// data.json arrives from another device a moment before this device's save.
+		plugin.stored = { ...v040Data, basesFolder: "Other" };
+		const external = plugin.onExternalSettingsChange();
+		await Promise.all([choosing, external]);
+		await settle();
+		expect(plugin.currentBasesFolder()).toBe(
+			plugin.store.get().basesFolder ?? "Glasp Bases",
+		);
+	});
+
+	test("one view left in another folder, the rest deleted, does not make it the Bases folder", async () => {
+		emptyApi();
+		const vault = new FakeVault(["Glasp", "Templates"]);
+		vault.seed("Templates/Glasp Web Highlights.base", "a copy");
+		const { plugin } = makePlugin(
+			{
+				...v040Data,
+				summaryFolder: "Glasp",
+				basesCreated: {
+					"Glasp Web Highlights.base": "Glasp",
+					"Glasp Summaries.base": "Glasp",
+				},
+			},
+			vault,
+		);
+		await plugin.onload();
+		await plugin.importHighlights();
+		expect(plugin.store.get().basesFolder).toBeUndefined();
+	});
+
+	test("a Bases folder saved with other letter case writes into the folder that exists", async () => {
+		emptyApi();
+		const vault = new FakeVault(["Glasp", "Views"]);
+		const { plugin } = makePlugin(
+			{ ...v040Data, summaryFolder: "Glasp", basesFolder: "views" },
+			vault,
+		);
+		await plugin.onload();
+		await plugin.importHighlights();
+		expect(vault.files.has("Views/Glasp Summaries.base")).toBe(true);
+		expect(vault.folders.has("views")).toBe(false);
+	});
+
+	test("data.json arriving from a sync service is taken in before a moved folder is followed, never replaced by the defaults", async () => {
+		const vault = new FakeVault(["Glasp", "Glasp Bases", "Notes"]);
+		const { plugin } = makePlugin(null, vault);
+		await plugin.onload();
+		// The file arrives; Obsidian has not told the plugin yet.
+		plugin.stored = { ...v040Data, accessToken: "REAL" };
+		vault.moveFolder("Glasp Bases", "Views");
+		await settle();
+		expect(
+			plugin.saves.some(
+				(saved) => (saved as { accessToken?: string }).accessToken !== "REAL",
+			),
+		).toBe(false);
+		expect(plugin.saves.at(-1)).toMatchObject({
+			accessToken: "REAL",
+			basesFolder: "Views",
+		});
+	});
+
+	test("while data.json cannot be read, a sync does not take over a folder", async () => {
+		emptyApi();
+		const vault = new FakeVault(["Glasp", "Clippings", "Clippings/Views"]);
+		vault.seed("Clippings/Views/Glasp Web Highlights.base", "view");
+		const { plugin } = makePlugin(
+			{ ...v040Data, summaryFolder: "Glasp" },
+			vault,
+		);
+		await plugin.onload();
+		plugin.stored = undefined;
+		vault.seed(".obsidian/plugins/glasp/data.json", "<<<<<<< a sync conflict");
+		await plugin.onExternalSettingsChange();
+		await plugin.importHighlights();
+		expect(plugin.store.get().basesFolder).toBeUndefined();
+		expect(
+			plugin.saves.some((saved) => "basesFolder" in (saved as object)),
+		).toBe(false);
+	});
+
+	test("on a new device, once the user has saved a setting, a moved Bases folder is followed", async () => {
+		const vault = new FakeVault(["Glasp", "Glasp Bases", "Notes"]);
+		const { plugin } = makePlugin(null, vault);
+		await plugin.onload();
+		await plugin.updateSettings({ accessToken: "NEW", folder: "Glasp" });
+		vault.moveFolder("Glasp Bases", "Notes/Glasp Bases");
+		await settle();
+		expect(plugin.saves.at(-1)).toMatchObject({
+			accessToken: "NEW",
+			basesFolder: "Notes/Glasp Bases",
+		});
+	});
+
+	test("following a moved folder does not undo a change from another device that Obsidian has not passed on yet", async () => {
+		const vault = new FakeVault(["Glasp", "Glasp Bases", "Notes"]);
+		const { plugin } = makePlugin(v040Data, vault);
+		await plugin.onload();
+		// Another device saved a new token; Obsidian has not told the plugin yet.
+		plugin.stored = { ...v040Data, accessToken: "NEW" };
+		vault.moveFolder("Glasp Bases", "Notes/Glasp Bases");
+		await settle();
+		expect(plugin.saves.at(-1)).toMatchObject({
+			accessToken: "NEW",
+			basesFolder: "Notes/Glasp Bases",
+		});
+		expect(plugin.store.get().accessToken).toBe("NEW");
+	});
+
+	test("taking over a moved folder does not undo a change from another device that Obsidian has not passed on yet", async () => {
+		emptyApi();
+		const vault = new FakeVault(["Glasp", "Clippings", "Clippings/Views"]);
+		vault.seed("Clippings/Views/Glasp Web Highlights.base", "view");
+		const { plugin } = makePlugin(
+			{ ...v040Data, summaryFolder: "Glasp" },
+			vault,
+		);
+		await plugin.onload();
+		plugin.stored = { ...v040Data, summaryFolder: "Glasp", template: "NEW" };
+		await plugin.importHighlights();
+		expect(plugin.store.get()).toMatchObject({
+			basesFolder: "Clippings/Views",
+			template: "NEW",
+		});
+		expect(plugin.stored).toMatchObject({ template: "NEW" });
 	});
 });
