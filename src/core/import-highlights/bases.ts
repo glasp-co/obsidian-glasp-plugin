@@ -18,8 +18,28 @@
  * @see https://obsidian.md/help/bases/syntax
  */
 
-/** Top-level folder that holds every generated `.base` view. */
+/** The folder that holds every generated `.base` view, unless one is chosen. */
 export const GLASP_BASES_FOLDER = "Glasp Bases";
+
+/**
+ * The saved "Bases folder" as a vault path: the default when it is not set,
+ * blank, or not text (hand-edited, or from a newer version). Spaces are kept:
+ * a folder name may start or end with one.
+ */
+export const resolveBasesFolder = (value: unknown): string => {
+	if (typeof value !== "string" || !value.trim()) {
+		return GLASP_BASES_FOLDER;
+	}
+	// As Obsidian's normalizePath, which the vault's own paths have been
+	// through: one slash between names, plain spaces, composed accents.
+	const path = value
+		.replace(/\\/g, "/")
+		.replace(/\/{2,}/g, "/")
+		.replace(/^\/+|\/+$/g, "")
+		.replace(/[\u00a0\u202f]/g, " ")
+		.normalize("NFC");
+	return path.trim() ? path : GLASP_BASES_FOLDER;
+};
 
 export type BaseSpec = { filename: string; folder: string; content: string };
 
@@ -105,3 +125,81 @@ export const bookmarkBase = (folder: string): BaseSpec => ({
 		image: "note.Thumbnail",
 	}),
 });
+
+const BUILDERS = [
+	webHighlightBase,
+	kindleHighlightBase,
+	summaryBase,
+	bookmarkBase,
+];
+
+/** The name of every view the plugin writes. */
+export const BASE_FILENAMES: readonly string[] = BUILDERS.map(
+	(build) => build("").filename,
+);
+
+/**
+ * A view whose source folder changed from `previous` to `next`, with only its
+ * folder filter changed, so whatever else the user (or Obsidian, which writes
+ * the whole file again when a column is resized or the sort is changed) put
+ * in it stays. The filter is the list item `file.inFolder("<previous>")`, in
+ * any of YAML's three ways of writing it, as a whole item; it is written back
+ * as the plugin writes it. Null when there is no such item, or more than one
+ * (a file of the user's own, or a filter they changed): it is left as it is.
+ * The edit is made only when `parse` (Obsidian's parseYaml) reads it back as
+ * exactly that one string changed, so a line that only looks like the item
+ * (inside a longer text, or continued on the next line) is never touched.
+ */
+export const retargetBase = (
+	content: string,
+	previous: string,
+	next: string,
+	parse: (text: string) => unknown,
+): string | null => {
+	const before = `file.inFolder(${JSON.stringify(previous)})`;
+	const forms = new Set([
+		before,
+		yamlSingleQuoted(before),
+		JSON.stringify(before),
+	]);
+	const lines = content.split("\n");
+	let found = -1;
+	for (const [i, line] of lines.entries()) {
+		const item = /^(\s*-\s+)(.*?)(\r?)$/.exec(line);
+		if (item && forms.has(item[2])) {
+			if (found >= 0) {
+				return null;
+			}
+			found = i;
+		}
+	}
+	if (found < 0) {
+		return null;
+	}
+	const after = `file.inFolder(${JSON.stringify(next)})`;
+	const [, indent, , cr] = /^(\s*-\s+)(.*?)(\r?)$/.exec(lines[found]) ?? [];
+	lines[found] = `${indent}${yamlSingleQuoted(after)}${cr}`;
+	const edited = lines.join("\n");
+	try {
+		const meant = replaceString(parse(content), before, after);
+		return sameValue(parse(edited), meant) ? edited : null;
+	} catch {
+		return null;
+	}
+};
+
+/** `value` with every string equal to `from` replaced by `to`. */
+const replaceString = (value: unknown, from: string, to: string): unknown => {
+	if (value === from) return to;
+	if (Array.isArray(value)) return value.map((v) => replaceString(v, from, to));
+	if (value && typeof value === "object") {
+		return Object.fromEntries(
+			Object.entries(value).map(([k, v]) => [k, replaceString(v, from, to)]),
+		);
+	}
+	return value;
+};
+
+/** The same data, as parsed YAML compares. */
+const sameValue = (a: unknown, b: unknown): boolean =>
+	JSON.stringify(a) === JSON.stringify(b);

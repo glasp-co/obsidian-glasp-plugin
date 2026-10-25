@@ -2,7 +2,7 @@ import {
 	type App,
 	type CachedMetadata,
 	TFile,
-	type TFolder,
+	TFolder,
 	type Vault,
 	parseYaml,
 } from "obsidian";
@@ -211,6 +211,69 @@ export class ObsidianApp {
 			}
 		}
 		return true;
+	}
+
+	/** A file (not a folder) is at this path. */
+	isFile(path: string): boolean {
+		return this.getVault().getAbstractFileByPath(path) instanceof TFile;
+	}
+
+	/** A folder with nothing in it is at this path. */
+	isEmptyFolder(path: string): boolean {
+		const folder = this.getVault().getAbstractFileByPath(path);
+		return folder instanceof TFolder && folder.children.length === 0;
+	}
+
+	/** Move a file, updating links to it, as a move in Obsidian's file explorer does. */
+	async moveFile(from: string, to: string): Promise<void> {
+		const file = this.getVault().getAbstractFileByPath(from);
+		if (!(file instanceof TFile)) {
+			throw new Error(`"${from}" is not a file.`);
+		}
+		await this.getApp().fileManager.renameFile(file, to);
+	}
+
+	/**
+	 * Move a file without updating links to it, so Obsidian never stops to ask
+	 * (it asks when "Automatically update internal links" is off and a link
+	 * to the file would lead elsewhere after the move, such as one written with
+	 * its path). For moves the user did not start themselves.
+	 */
+	async moveFileQuietly(from: string, to: string): Promise<void> {
+		const file = this.getVault().getAbstractFileByPath(from);
+		if (!(file instanceof TFile)) {
+			throw new Error(`"${from}" is not a file.`);
+		}
+		await this.getVault().rename(file, to);
+	}
+
+	/**
+	 * Remove a folder that is empty, also on disk (Obsidian does not list
+	 * dotfiles or files still arriving from a sync service), as the user's
+	 * "Deleted files" setting says.
+	 */
+	async trashEmptyFolder(path: string): Promise<void> {
+		const folder = this.getVault().getAbstractFileByPath(path);
+		if (!(folder instanceof TFolder) || folder.children.length > 0) {
+			return;
+		}
+		const onDisk = await this.getVault().adapter.list(path);
+		if (onDisk.files.length || onDisk.folders.length) {
+			return;
+		}
+		await this.getApp().fileManager.trashFile(folder);
+	}
+
+	/** A file's text, or null when there is no file at the path. */
+	async readFileAt(path: string): Promise<string | null> {
+		const file = this.getVault().getAbstractFileByPath(path);
+		if (file === null) {
+			return null;
+		}
+		if (!(file instanceof TFile)) {
+			throw new Error(`"${path}" is a folder, not a file.`);
+		}
+		return this.getVault().read(file);
 	}
 
 	/** Create a folder if it does not already exist. */
