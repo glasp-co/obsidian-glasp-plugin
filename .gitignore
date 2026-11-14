@@ -25,3 +25,6 @@ coverage
 # Environment variables
 .env
 .env.*
+
+# Lock files 
+pnpm-lock.yaml
