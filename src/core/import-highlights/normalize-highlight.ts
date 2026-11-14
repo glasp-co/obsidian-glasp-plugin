@@ -29,6 +29,7 @@ export const normalizeHighlight = (userHighlight: UserHighlight) => {
 		thumbnail_url: toYaml(userHighlight.thumbnail_url),
 		tags,
 		tags_yaml: toYamlFlowTags(tags),
+		title: userHighlight.title,
 		updated_at: new Date(userHighlight.updated_at).toISOString().slice(0, 10),
 		content,
 		highlights: userHighlight.highlights.map((highlight) => ({

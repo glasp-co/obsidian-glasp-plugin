@@ -18,6 +18,7 @@ export type HighlightTemplate = {
 	tags: string[];
 	/** The tags for `Tags: [{{tags_yaml}}]`, quoted where YAML needs it. */
 	tags_yaml: string;
+	title: string;
 	updated_at: string;
 	content: string;
 	highlights: (HighlightTemplateItem & {
