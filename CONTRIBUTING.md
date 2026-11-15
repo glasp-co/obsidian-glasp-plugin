@@ -8,7 +8,7 @@ Open an [issue](https://github.com/glasp-co/obsidian-glasp-plugin/issues) with w
 
 ## Setting up
 
-You need Node.js 20 or later (CI uses the version in `.node-version`) and npm.
+You need Node.js 20.19 or later in the 20 line, 22.12 or later in the 22 line, or 24 or later (CI uses 22.22.2, the version in `.node-version`), and npm.
 
 ```bash
 git clone https://github.com/glasp-co/obsidian-glasp-plugin
