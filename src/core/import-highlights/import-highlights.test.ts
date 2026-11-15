@@ -13,6 +13,7 @@ import {
 	type LastUpdatedKey,
 } from "./import-highlights";
 import { normalizeHighlight } from "./normalize-highlight";
+import { webHighlightSource } from "./sources";
 import { renderTemplate } from "./template-engine";
 import { useYamlParser } from "./yaml-tags";
 
@@ -1548,6 +1549,97 @@ describe("ImportHighlights.run", () => {
 		// Remembered as 0.4.1 remembers it, so a device still on 0.4.1 that
 		// shares data.json leaves the note alone too.
 		expect(c.written.lastUpdated[all[0].url]).toBe(version041(all[0]));
+	});
+
+	describe("a web note's title", () => {
+		const titled =
+			"---\nURL: {{url}}\nTitle: {{title}}\n---\n# {{title_text}}\n{{content}}\n";
+		const web = webHighlightSource("token", FOLDER, titled);
+		const setup = () => {
+			const at = new Date(Date.now() - 60 * 1000).toISOString();
+			const all = [item(1, { updated_at: at, title: "Page 1" })];
+			const { fetchPage } = serving(all);
+			const vault = new FakeVault([FOLDER]);
+			const c = cursors();
+			const { src } = source([], {
+				fetchPage,
+				template: web.template,
+				normalize: web.normalize,
+				unhashed: web.unhashed,
+			});
+			return { all, vault, c, src };
+		};
+
+		test("is shown by a template that uses it", async () => {
+			const { vault, c, src } = setup();
+
+			await importer(vault, c.store).run(src);
+
+			const note = vault.files.get(`${FOLDER}/Page 1.md`)?.content;
+			expect(note).toContain('Title: "Page 1"');
+			expect(note).toContain("# Page 1");
+		});
+
+		test("differing from one sync to the next leaves an edited note alone, though the note shows it", async () => {
+			const { all, vault, c, src } = setup();
+			await importer(vault, c.store).run(src);
+			const note = vault.files.get(`${FOLDER}/Page 1.md`);
+			if (!note) throw new Error("no note");
+			note.content += "\n## My thoughts\n";
+			all[0] = { ...all[0], title: "A video" };
+
+			const second = await importer(vault, c.store).run(src);
+
+			expect(second).toMatchObject({ fetched: 1, updated: 0, unchanged: 1 });
+			const after = vault.files.get(`${FOLDER}/Page 1.md`)?.content;
+			expect(after).toContain("## My thoughts");
+			expect(after).toContain('Title: "Page 1"');
+		});
+
+		test("differing from one sync to the next does not make a deleted note again under the new title", async () => {
+			const { all, vault, c, src } = setup();
+			await importer(vault, c.store).run(src);
+			vault.files.delete(`${FOLDER}/Page 1.md`);
+			all[0] = { ...all[0], title: "A video" };
+
+			const second = await importer(vault, c.store).run(src);
+
+			expect(second).toMatchObject({ fetched: 1, created: 0, unchanged: 1 });
+			expect(vault.files.has(`${FOLDER}/A video.md`)).toBe(false);
+			expect(vault.files.has(`${FOLDER}/Page 1.md`)).toBe(false);
+		});
+
+		test("is the current one once the page changes and the note is written again", async () => {
+			const { all, vault, c, src } = setup();
+			await importer(vault, c.store).run(src);
+			all[0] = {
+				...all[0],
+				title: "A video",
+				document_note: "a thought",
+				updated_at: new Date(Date.now() - 30 * 1000).toISOString(),
+			};
+
+			const second = await importer(vault, c.store).run(src);
+
+			expect(second).toMatchObject({ fetched: 1, updated: 1 });
+			const note = vault.files.get(`${FOLDER}/Page 1.md`)?.content;
+			expect(note).toContain('Title: "A video"');
+			expect(note).toContain("# A video");
+		});
+	});
+
+	test("a value of the same name from normalize is the one a note shows", async () => {
+		const vault = new FakeVault([FOLDER]);
+		const c = cursors();
+		const { src } = source([item(1)], {
+			unhashed: () => ({ url: '"https://elsewhere.example/"' }),
+		});
+
+		await importer(vault, c.store).run(src);
+
+		const note = vault.files.get(`${FOLDER}/Page 1.md`)?.content;
+		expect(note).toContain('URL: "https://example.com/1"');
+		expect(note).not.toContain("elsewhere");
 	});
 
 	test("an item remembered by 0.4.1 still counts as written, and what its note is made from is remembered beside it", async () => {

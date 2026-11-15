@@ -18,6 +18,16 @@ export type HighlightTemplate = {
 	tags: string[];
 	/** The tags for `Tags: [{{tags_yaml}}]`, quoted where YAML needs it. */
 	tags_yaml: string;
+	/**
+	 * The page's title, quoted for frontmatter (`Title: {{title}}`), as it was
+	 * when the note was last written.
+	 */
+	title: string;
+	/**
+	 * The title unquoted on one line, without `[` and `]`, for the note's body;
+	 * the page's URL, flattened the same way, when it has none.
+	 */
+	title_text: string;
 	updated_at: string;
 	content: string;
 	highlights: (HighlightTemplateItem & {

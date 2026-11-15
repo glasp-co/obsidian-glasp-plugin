@@ -458,7 +458,7 @@ export class SettingTab extends PluginSettingTab {
 		this.displayTemplateSetting(containerEl, {
 			name: "Web highlights template",
 			variables:
-				"{{url}}, {{glasp_url}}, {{thumbnail_url}}, {{tags}}, {{tags_yaml}}, {{updated_at}}, {{content}}, and {{#each highlights}} … {{/each}} with {{text}} (or {{highlight}}), {{note}}, {{color}}, {{highlightStyle}}, {{highlighted_at}}, {{yt_playback_position}}. Helpers: (eq a b), (lines text)",
+				"{{url}}, {{title}}, {{title_text}}, {{glasp_url}}, {{thumbnail_url}}, {{tags}}, {{tags_yaml}}, {{updated_at}}, {{content}}, and {{#each highlights}} … {{/each}} with {{text}} (or {{highlight}}), {{note}}, {{color}}, {{highlightStyle}}, {{highlighted_at}}, {{yt_playback_position}}. Helpers: (eq a b), (lines text)",
 			defaultTemplate: HIGHLIGHT_TEMPLATE,
 			key: "template",
 		});
