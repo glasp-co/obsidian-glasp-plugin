@@ -86,7 +86,7 @@ The views are created once and are **not** re-created if you delete them, so you
 You can fully control how each note looks using [Handlebars](https://handlebarsjs.com/) placeholders. Leave a template empty to use the default.
 
 **Web highlights** — available variables:
-`{{url}}` · `{{glasp_url}}` · `{{thumbnail_url}}` · `{{tags}}` · `{{tags_yaml}}` · `{{updated_at}}` · `{{content}}` · `{{#each highlights}}…{{/each}}`
+`{{url}}` · `{{title}}` · `{{title_text}}` · `{{glasp_url}}` · `{{thumbnail_url}}` · `{{tags}}` · `{{tags_yaml}}` · `{{updated_at}}` · `{{content}}` · `{{#each highlights}}…{{/each}}`
 
 **Kindle highlights** — available variables:
 `{{url}}` · `{{glasp_url}}` · `{{author}}` · `{{thumbnail_url}}` · `{{tags}}` · `{{tags_yaml}}` · `{{updated_at}}` · `{{content}}` · `{{#each highlights}}…{{/each}}`
@@ -98,6 +98,8 @@ You can fully control how each note looks using [Handlebars](https://handlebarsj
 `{{url}}` · `{{title}}` · `{{domain}}` · `{{category}}` · `{{description}}` · `{{thumbnail_url}}` · `{{created_at}}` · `{{updated_at}}` · `{{title_text}}` · `{{url_text}}`
 
 > ℹ️ Frontmatter values (e.g. `{{title}}`, `{{domain}}`) are emitted already quoted so they can't break the note's Properties — keep them on their own line. The `_text` variants are unquoted, for use in the note body (e.g. a Markdown link). Keeping the `URL` property in your template is what lets the plugin match and update existing notes instead of duplicating them. The `Glasp` property is reserved: keep `Glasp: summary` in a summaries template and `Glasp: bookmark` in a bookmarks template, and do not use those two values in the web or Kindle templates.
+
+> ℹ️ In a web highlights note, `{{title}}` and `{{title_text}}` are the page's title when the note was last written. The note is written again when the page changes in Glasp, as every web note is, and then shows the current title; until then it keeps the title it has. An earlier version of the plugin writes them empty, so update the plugin on every device that syncs this vault before you use them.
 
 > ℹ️ Use `Tags: [{{tags_yaml}}]` for tags in frontmatter (the default templates do). Ordinary tags come out exactly as `{{tags}}` writes them; a tag containing a comma, bracket, quote or other YAML syntax, or one YAML would read as something else (such as `true`, `null` or `2024`), is quoted, so it can't split into two tags or break the Properties.
 

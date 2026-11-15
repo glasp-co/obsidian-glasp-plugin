@@ -1,7 +1,21 @@
 import type { Highlight, UserHighlight } from "src/glasp-api/highlight/type";
-import { toYaml } from "./frontmatter";
+import { toInline, toYaml } from "./frontmatter";
 import { highlightStyleOf, normalizeTags } from "./highlight-fields";
-import { toYamlFlowTags } from "./yaml-tags";
+import { toYamlDoubleQuoted, toYamlFlowTags } from "./yaml-tags";
+
+/**
+ * The page's title for a web highlights template: `{{title}}` quoted for
+ * frontmatter, and `{{title_text}}` unquoted on one line, without `[` and `]`,
+ * for the note's body (the page's URL, flattened the same way, when it has no
+ * title). They are not among the values whose hash decides whether a note is
+ * written again (`normalizeHighlight`'s), so a title that differs from one
+ * sync to the next does not by itself write a note again: a note shows the
+ * title it was last written with.
+ */
+export const highlightTitleValues = (userHighlight: UserHighlight) => ({
+	title: toYamlDoubleQuoted(String(userHighlight.title ?? "")),
+	title_text: toInline(userHighlight.title) || toInline(userHighlight.url),
+});
 
 export const normalizeHighlight = (userHighlight: UserHighlight) => {
 	let content = "";
@@ -29,7 +43,6 @@ export const normalizeHighlight = (userHighlight: UserHighlight) => {
 		thumbnail_url: toYaml(userHighlight.thumbnail_url),
 		tags,
 		tags_yaml: toYamlFlowTags(tags),
-		title: userHighlight.title,
 		updated_at: new Date(userHighlight.updated_at).toISOString().slice(0, 10),
 		content,
 		highlights: userHighlight.highlights.map((highlight) => ({

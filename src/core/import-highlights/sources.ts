@@ -16,7 +16,10 @@ import type { KindleBook } from "src/glasp-api/kindle-highlight/type";
 import type { Summary } from "src/glasp-api/summary/type";
 import type { HighlightImportSource } from "./import-highlights";
 import { normalizeBookmark } from "./normalize-bookmark";
-import { normalizeHighlight } from "./normalize-highlight";
+import {
+	highlightTitleValues,
+	normalizeHighlight,
+} from "./normalize-highlight";
 import { normalizeKindleHighlight } from "./normalize-kindle-highlight";
 import { normalizeSummary } from "./normalize-summary";
 
@@ -33,6 +36,7 @@ export const webHighlightSource = (
 		lastUpdatedKey: "lastUpdated",
 		fetchPage: (args) => api.fetchHighlights(args),
 		normalize: normalizeHighlight,
+		unhashed: highlightTitleValues,
 	};
 };
 

@@ -220,6 +220,14 @@ export type HighlightImportSource<T extends Item> = {
 		updatedAfter?: string;
 	}) => Promise<{ results: T[]; nextPageCursor: string | null }>;
 	normalize: (item: T) => unknown;
+	/**
+	 * More values a template can show, left out of the hash that decides
+	 * whether a changed item's note is written again (that hash is taken of
+	 * `normalize`'s values): a difference in them alone does not write a note
+	 * again, so a note shows them as they were when it was last written. Where
+	 * both have a value of the same name, `normalize`'s is used.
+	 */
+	unhashed?: (item: T) => Record<string, unknown>;
 	/** Derive the note filename from an item. Defaults to the item title. */
 	filename?: (item: T) => string;
 	/**
@@ -829,7 +837,12 @@ export class ImportHighlights {
 				}
 				let content: string;
 				try {
-					content = this.obApp.render(source.template, data);
+					content = this.obApp.render(
+						source.template,
+						source.unhashed
+							? { ...source.unhashed(resolved), ...(data as object) }
+							: data,
+					);
 				} catch (e) {
 					fail(item, "render", e);
 					continue;
